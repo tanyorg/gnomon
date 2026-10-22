@@ -1,8 +1,8 @@
 [package]
-name = "gpsmon-rs"
+name = "gnomon"
 version = "0.1.0"
 edition = "2021"
-description = "NMEA 0183 GNSS monitor in the spirit of gpsd's gpsmon (gpsd or raw TCP source)"
+description = "GNSS/NMEA 0183 monitor modelled on gpsd's gpsmon: gpsd, raw NMEA over TCP, or serial port"
 authors = ["tany <tany@tany.org>"]
 license = "BSD-2-Clause"
 rust-version = "1.80"
@@ -10,7 +10,7 @@ rust-version = "1.80"
 # Intentionally dependency-free (std only).
 
 [[bin]]
-name = "gpsmon-rs"
+name = "gnomon"
 path = "src/main.rs"
 
 [profile.release]

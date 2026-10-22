@@ -1,4 +1,7 @@
-# gpsmon-rs
+# gnomon
+
+> **gnomon** /ˈnoʊmɒn/ — 日時計の影をつくる棒。天体の位置から時刻を読む道具。
+> そして **GN**SS **mon**itor。
 
 gpsd 付属の `gpsmon` を参考に Rust で書き直した NMEA 0183 モニタ。
 ネットワーク越しの gpsd、raw NMEA を流す TCP ポート（シリアル-TCP ブリッジや
@@ -11,7 +14,7 @@ NTP アプライアンスの NMEA 出力など）、またはシリアルポー�
 
 ```sh
 cargo build --release
-./target/release/gpsmon-rs ntp.home.tany.org:4001
+./target/release/gnomon ntp.home.tany.org:4001
 ```
 
 Raspberry Pi などへは、ターゲット上でそのままビルドするか、macOS から
@@ -21,7 +24,7 @@ Rust 1.80 以上。
 ## 使い方
 
 ```
-gpsmon-rs [options] [target]
+gnomon [options] [target]
 
 target (default localhost:2947):
   host[:port]            gpsd JSON / raw NMEA を自動判別
@@ -58,9 +61,9 @@ options:
 ## シリアル入力
 
 ```sh
-gpsmon-rs /dev/ttyAMA0              # 速度自動判別
-gpsmon-rs -s 115200 /dev/ttyUSB0    # 速度指定
-gpsmon-rs /dev/cu.usbserial-110     # macOS
+gnomon /dev/ttyAMA0              # 速度自動判別
+gnomon -s 115200 /dev/ttyUSB0    # 速度指定
+gnomon /dev/cu.usbserial-110     # macOS
 ```
 
 - 8N1・raw・フロー制御なし・**`CLOCAL`**（kermit の `SET CARRIER-WATCH OFF` 相当、DCD を無視）・`HUPCL` 無効・VMIN=0/VTIME=5。

@@ -103,7 +103,7 @@ fn header(c: &mut Canvas, app: &App, wall: SystemTime) {
         Kind::Serial { speed, .. } => format!("serial {speed} 8N1"),
     };
     let state = if app.connected { "up" } else { "down" };
-    let left = format!(" gpsmon-rs  {}  [{} {}]", app.target, kind, state);
+    let left = format!(" gnomon  {}  [{} {}]", app.target, kind, state);
     c.put(0, 0, &left, st::REV | st::BOLD);
     let right = format!("host {} ", fmt_utc(wall));
     if c.w > left.len() + right.len() + 1 {

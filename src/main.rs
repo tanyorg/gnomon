@@ -1,4 +1,4 @@
-//! gpsmon-rs: NMEA 0183 GNSS monitor modelled on gpsd's gpsmon.
+//! gnomon: NMEA 0183 GNSS monitor modelled on gpsd's gpsmon.
 
 mod app;
 mod json;
@@ -17,7 +17,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "\
-usage: gpsmon-rs [options] [target]
+usage: gnomon [options] [target]
 
 target (default localhost:2947):
   host[:port]            connect and auto-detect gpsd JSON or raw NMEA
@@ -75,7 +75,7 @@ fn parse_args() -> Result<Opts, String> {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("gpsmon-rs {}", env!("CARGO_PKG_VERSION"));
+                println!("gnomon {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "-r" | "--raw" => o.force = Some(target::Proto::Raw),
@@ -122,12 +122,12 @@ fn main() {
     let o = match parse_args() {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("gpsmon-rs: {e}\n\n{USAGE}");
+            eprintln!("gnomon: {e}\n\n{USAGE}");
             std::process::exit(2);
         }
     };
     if let Err(e) = run(o) {
-        eprintln!("gpsmon-rs: {e}");
+        eprintln!("gnomon: {e}");
         std::process::exit(1);
     }
 }

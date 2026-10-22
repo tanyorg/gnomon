@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Mock NMEA sources for testing gpsmon-rs.
+# Mock NMEA sources for testing gnomon.
 #   mockgps.py raw  PORT  -> raw NMEA over TCP (like a serial-over-TCP bridge)
 #   mockgps.py gpsd PORT  -> fake gpsd: VERSION banner, waits for ?WATCH,
 #                            then raw NMEA lines + TPV/PPS/TOFF JSON
