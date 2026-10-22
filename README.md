@@ -143,6 +143,24 @@ gnomon /dev/cu.usbserial-110     # macOS
 - With gpsd, `raw:1` is used, so binary protocols only appear as hex lines in
   the raw window.
 
+## Acknowledgements
+
+gnomon would not exist without [gpsd](https://gpsd.io/). For three decades
+gpsd has been the quiet, dependable piece that sits between GNSS receivers and
+everything else, and `gpsmon` in particular set the pattern this tool follows:
+a plain terminal screen that shows exactly what the receiver is saying.
+
+Our sincere thanks and respect go to Remco Treffkorn, who started gpsd in 1995,
+and Derrick J. Brashear; to Russ Nelson, who maintained it in its early years;
+to Eric S. Raymond, who rewrote it in 2004–2005 and designed the JSON protocol
+that gnomon speaks; to Chris Kuethe and Gary E. Miller; and to the many other
+contributors who have kept gpsd running on countless receivers, NTP servers
+and embedded systems around the world. gpsd's documentation, notably
+*NMEA Revealed*, remains an invaluable reference for anyone who has to make
+sense of NMEA 0183 as it is actually spoken by real hardware.
+
+Any mistakes in gnomon are entirely our own.
+
 ## License
 
 BSD-2-Clause, to match gpsd. The code is a new implementation modelled on the
