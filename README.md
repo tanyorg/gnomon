@@ -1,113 +1,149 @@
 # gnomon
 
-> **gnomon** /ˈnoʊmɒn/ — 日時計の影をつくる棒。天体の位置から時刻を読む道具。
-> そして **GN**SS **mon**itor。
+> **gnomon** /ˈnoʊmɒn/ — the part of a sundial that casts the shadow; an instrument
+> that reads the time from the sky. Also: **GN**SS **mon**itor.
 
-gpsd 付属の `gpsmon` を参考に Rust で書き直した NMEA 0183 モニタ。
-ネットワーク越しの gpsd、raw NMEA を流す TCP ポート（シリアル-TCP ブリッジや
-NTP アプライアンスの NMEA 出力など）、またはシリアルポート直結の受信機から読み、
-衛星・測位・センテンス統計・生データを表示する。
+An NMEA 0183 monitor written in Rust, modelled on `gpsmon` from gpsd.
+It reads from gpsd over the network, from a TCP port carrying raw NMEA
+(a serial-to-TCP bridge, the NMEA output of an NTP appliance, ...), or from a
+receiver attached directly to a serial port, and shows satellites, the fix,
+per-sentence statistics and the raw data stream.
 
-外部 crate に依存しない（std のみ）。macOS / Linux / *BSD で `cargo build` だけで通る。
+No external crates (std only). Builds with plain `cargo build` on macOS, Linux
+and the BSDs.
 
-## ビルド
+## Build
 
 ```sh
 cargo build --release
-./target/release/gnomon ntp.home.tany.org:4001
+./target/release/gnomon ntp.example.net:4001
 ```
 
-Raspberry Pi などへは、ターゲット上でそのままビルドするか、macOS から
-`cargo zigbuild --release --target aarch64-unknown-linux-gnu` 等でクロスビルドする。
-Rust 1.80 以上。
+For a Raspberry Pi and similar, build on the target itself, or cross-compile,
+e.g. `cargo zigbuild --release --target aarch64-unknown-linux-gnu` from macOS.
+Requires Rust 1.80 or later.
 
-## 使い方
+## Usage
 
 ```
 gnomon [options] [target]
 
 target (default localhost:2947):
-  host[:port]            gpsd JSON / raw NMEA を自動判別
-  host:port:/dev/ttyX    gpsd、指定デバイスのみ WATCH
-  [ipv6]:port            IPv6 リテラル
-  tcp://host:port        raw NMEA 固定（相手には一切書き込まない）
-  gpsd://host[:port]     gpsd 固定
+  host[:port]            auto-detect gpsd JSON or raw NMEA
+  host:port:/dev/ttyX    gpsd, watch only that device
+  [ipv6]:port            IPv6 literal
+  tcp://host:port        raw NMEA only (never writes to the peer)
+  gpsd://host[:port]     gpsd only
+  /dev/ttyXXX            serial port (on macOS use /dev/cu.*)
 
 options:
-  -r, --raw              raw NMEA として扱う（tcp:// と同じ）
-  -g, --gpsd             gpsd として扱う
-  -s, --speed BPS        シリアル速度（省略時は自動判別）
-  -l, --log FILE         受信バイト列をそのまま FILE に追記
-  -f, --replay FILE      キャプチャ再生（時刻で 1 epoch/s にペーシング、'-' は stdin で非ペーシング）
-  -a, --ascii            罫線を ASCII に（曖昧幅を全角扱いする端末向け）
-  -j, --json             起動時から gpsd JSON を Raw 窓に表示
-      --snapshot SECS    TUI なしで SECS 秒受信して 1 画面をテキスト出力して終了
-      --size WxH         --snapshot の画面サイズ（既定 100x40）
+  -r, --raw              treat the target as raw NMEA (same as tcp://)
+  -g, --gpsd             treat the target as gpsd
+  -s, --speed BPS        serial speed (default: auto-detect)
+  -l, --log FILE         append every received byte to FILE
+  -f, --replay FILE      play back a capture, paced at 1 epoch/s by sentence time
+                         ('-' reads stdin, unpaced)
+  -a, --ascii            ASCII box drawing (for terminals treating ambiguous
+                         width as double)
+  -j, --json             show gpsd JSON in the raw window from the start
+      --snapshot SECS    no TUI: receive for SECS seconds, print one screen as
+                         text and exit
+      --size WxH         screen size for --snapshot (default 100x40)
 ```
 
-キー操作: `q` 終了 / `p`（またはスペース）Raw 窓の一時停止 / `c` 統計クリア / `j` JSON 行の表示切替
+Keys: `q` quit / `p` (or space) pause the raw window / `c` clear statistics /
+`j` toggle JSON lines
 
-## 自動判別
+## Protocol auto-detection
 
-接続直後に相手から届く最初の非空白バイトで判定する。
+Decided by the first non-whitespace byte received after connecting:
 
-- `{` → gpsd（VERSION バナー）。`?WATCH={"enable":true,"json":true,"raw":1,"pps":true}` を送る
-- `$` / `!` → raw NMEA。以後も相手には何も書き込まない
-- 何も来ない場合、ポートが 2947 のときだけ 2 秒後に gpsd とみなして WATCH を送る。
-  それ以外のポートでは書き込まずにデータを待ち続ける（GNSS 受信機のシリアル入力にゴミを流さないため）
+- `{` → gpsd (VERSION banner). Sends
+  `?WATCH={"enable":true,"json":true,"raw":1,"pps":true}`
+- `$` / `!` → raw NMEA. Nothing is ever written to the peer.
+- Nothing received: only on port 2947 is the peer assumed to be gpsd after
+  2 seconds and sent a WATCH. On any other port gnomon keeps waiting without
+  writing, so that no junk ever reaches a GNSS receiver's serial input.
 
-15 秒無受信、または切断時は自動再接続（1→2→4→8 秒バックオフ、データを受信できたらリセット）。
+After 15 seconds without data, or on disconnect, it reconnects automatically
+(back-off 1→2→4→8 s, reset once data is received).
 
-## シリアル入力
+## Serial input
 
 ```sh
-gnomon /dev/ttyAMA0              # 速度自動判別
-gnomon -s 115200 /dev/ttyUSB0    # 速度指定
+gnomon /dev/ttyAMA0              # auto-detect speed
+gnomon -s 115200 /dev/ttyUSB0    # fixed speed
 gnomon /dev/cu.usbserial-110     # macOS
 ```
 
-- 8N1・raw・フロー制御なし・**`CLOCAL`**（kermit の `SET CARRIER-WATCH OFF` 相当、DCD を無視）・`HUPCL` 無効・VMIN=0/VTIME=5。
-  termios を直接操作し（`src/tty.rs`、Linux / macOS / *BSD の構造体を個別定義）、設定後に読み戻して `CLOCAL` と速度を検証する
-- `O_NONBLOCK` で open（open 自体が DCD 待ちで止まらないように）→ `CLOCAL` 設定 → ブロッキングに戻す、の順。
-  接続表示に DCD の状態（`DCD off (ignored)` 等）を出す
-- `TIOCEXCL` で排他オープンにする（以後 gpsd 等が同じポートを開けない。既に開いているプロセスは追い出せない）
-- 自動判別は 9600, 115200, 38400, 4800, 19200, 57600, 230400 の順に各 2.5 秒、
-  チェックサムが正しいセンテンスが 2 本揃った速度を採用。再接続時は前回の速度から試す
-- 開いた直後と速度変更のたびに入力バッファを `tcflush` で捨てる（溜まっていた古い行を新しい時刻で表示しないため）
-- USB シリアルを抜くと読み出しエラーで検出し、再接続を繰り返す
-- 受信機へは一切書き込まない
-- **gpsd が掴んでいるデバイスは開かないこと。** 両方が読むとバイト列を奪い合い、どちらも壊れたデータを見る。
-  また `stty` で回線設定を書き換えるので、使い終わったら gpsd 側の再起動が必要になる場合がある
-- `Lag (tx start)`: シリアルでは、各行の先頭バイトが線路に出た時刻を
-  「チャンク受信時刻 − 以降のバイト数 × 10 bit / 速度」で逆算している。
-  そのため値は受信機がその epoch の送出を始めた時刻と UTC 正秒との差に近い
-  （USB シリアル変換器のレイテンシタイマ分、FTDI なら既定 16 ms 程度、は残る）。行の推定時刻は単調増加にクランプする
-- **USB CDC-ACM デバイス**（macOS `cu.usbmodem*`、Linux `ttyACM*`。u-blox などネイティブ USB の受信機）は
-  ボーレートが名目上の値でデータは USB 転送単位で届くため、上記の逆算はせず受信時刻そのものを使う。
-  ヘッダは `serial USB CDC`、Lag は `(host-fix)` 表示
+- 8N1, raw, no flow control, **`CLOCAL`** (carrier detect ignored, the
+  equivalent of kermit's `SET CARRIER-WATCH OFF`), `HUPCL` off, VMIN=0/VTIME=5.
+  termios is driven directly (`src/tty.rs`, with the struct defined separately
+  for Linux, macOS and the BSDs), and `CLOCAL` and the speed are read back and
+  verified after setting.
+- Opened with `O_NONBLOCK` so that open(2) itself never waits for DCD, then
+  `CLOCAL` is set, then the descriptor is switched back to blocking. The
+  connection status shows the DCD state (`DCD off (ignored)` etc.).
+- Opened exclusively with `TIOCEXCL` (gpsd and others can no longer open the
+  port; a process that already has it open is not evicted).
+- Speed auto-detection tries 9600, 115200, 38400, 4800, 19200, 57600, 230400,
+  2.5 s each, and picks the first speed that yields two sentences with valid
+  checksums. On reconnect, the last good speed is tried first.
+- The input buffer is discarded with `tcflush` right after opening and after
+  every speed change, so stale lines are never shown with fresh timestamps.
+- Unplugging a USB serial adapter is detected as a read error; gnomon keeps
+  trying to reopen the port.
+- Nothing is ever written to the receiver.
+- **Do not open a device that gpsd is using.** Both would read from it, steal
+  bytes from each other, and both would see corrupted data. gnomon also
+  changes the line settings, so gpsd may need a restart afterwards.
+- `Lag (tx start)`: on a serial port, the time each line's first byte went out
+  on the wire is estimated as "chunk arrival time − bytes that followed ×
+  10 bits / speed". The value is therefore close to the offset between the
+  moment the receiver started sending the epoch and the UTC second (the
+  latency timer of a USB serial adapter, 16 ms by default for FTDI, still
+  remains). Estimated line times are clamped to be monotonic.
+- **USB CDC-ACM devices** (macOS `cu.usbmodem*`, Linux `ttyACM*`; u-blox and
+  other receivers with native USB) have only a nominal baud rate and deliver
+  data in USB transfers, so no back-dating is done and the arrival time is used
+  as-is. The header shows `serial USB CDC` and Lag shows `(host-fix)`.
 
-## 画面
+## Screen
 
-- **Satellites**: 系統 / PRN / 仰角 / 方位 / C/N0 / 測位使用。NMEA 4.10+ の GSV signal ID ごとの C/N0 は `/` 区切り。
-  GSA の system ID（field 18）優先、無ければ talker、GN talker なら PRN 範囲で系統判定。
-  GPS talker 内の SBAS（33-64, 120-158）と QZSS（193-202）は別系統として表示
-- **Fix**: RMC/GGA/GNS/GLL/ZDA/VTG/GSA/GST/TXT から集約
-  - `Lag (host-fix)`: 各 epoch 最初の時刻付きセンテンスの受信ホスト時刻 − センテンス内 UTC。
-    受信機の出力遅延＋ネットワーク遅延＋ホスト時計誤差の合計で、NMEA の送出タイミング確認用
-- **Sentences**: アドレス別の件数と出力周期（Intvl）。周期は NMEA epoch（RMC/GGA 等の時刻変化）単位の到着間隔の EWMA で、
-  GSV のように 1 epoch に複数届くものも 1 回と数える。周期の 3 倍（最低 3 秒）途絶すると経過秒数を黄色で `12s!` 表示。
-  起動時の GPTXT のように周期が確立していない（1 epoch にしか出ていない）センテンスは途絶扱いしない。
-  チェックサム不一致があると赤
-- **gpsd**（gpsd 接続時のみ）: VERSION、DEVICES、TPV、PPS / TOFF の `real − clock`
-  （PPS は µs、TOFF は ms 表示。正なら system clock が遅れている）
-- **Raw data**: ホスト受信時刻（UTC, ms）付きの生行。チェックサム無しは黄、不一致は赤
+- **Satellites**: system / PRN / elevation / azimuth / C/N0 / used in fix.
+  With NMEA 4.10+, C/N0 per GSV signal ID is shown separated by `/`.
+  The system is taken from the GSA system ID (field 18) when present, otherwise
+  from the talker, and from the PRN range for the GN talker. SBAS (33-64,
+  120-158) and QZSS (193-202) reported under the GPS talker are shown as their
+  own systems.
+- **Fix**: merged from RMC/GGA/GNS/GLL/ZDA/VTG/GSA/GST/TXT.
+  - `Lag (host-fix)`: host receive time of the first time-bearing sentence of
+    each epoch minus the UTC time in that sentence. The sum of receiver output
+    delay, network delay and host clock error; useful for checking NMEA output
+    timing.
+- **Sentences**: count and output interval (Intvl) per address. The interval is
+  an EWMA of arrival intervals measured per NMEA epoch (a change of the time in
+  RMC/GGA etc.), so sentences such as GSV that arrive several times per epoch
+  count once. When a sentence is missing for 3× its interval (at least 3 s),
+  the elapsed seconds are shown in yellow as `12s!`. Sentences that never
+  established an interval (seen in only one epoch, such as start-up GPTXT
+  banners) are not treated as missing. Shown in red if any checksum failed.
+- **gpsd** (gpsd connections only): VERSION, DEVICES, TPV, and
+  `real − clock` from PPS / TOFF (PPS in µs, TOFF in ms; positive means the
+  system clock is behind).
+- **Raw data**: raw lines with host receive time (UTC, ms). Lines without a
+  checksum are yellow, lines with a bad checksum red.
 
-## 本家 gpsmon との違い
+## Differences from gpsd's gpsmon
 
-- NMEA 0183 のみ。UBX / SiRF / TSIP などのバイナリドライバ別パネルは無い
-- デバイスへのコマンド送信（受信機側のボーレート変更・出力設定等）は無し
-- gpsd 接続時は `raw:1` を使うのでバイナリプロトコルは hex 行として Raw 窓に出るだけ
+- NMEA 0183 only. No per-driver panels for binary protocols such as UBX, SiRF
+  or TSIP.
+- No commands are sent to the device (no receiver baud-rate changes, output
+  configuration, etc.).
+- With gpsd, `raw:1` is used, so binary protocols only appear as hex lines in
+  the raw window.
 
-## ライセンス
+## License
 
-BSD-2-Clause（gpsd に合わせた）。コードは gpsmon の挙動を参考にした新規実装で、gpsd のソースは含まない。
+BSD-2-Clause, to match gpsd. The code is a new implementation modelled on the
+behaviour of gpsmon and contains no gpsd source code.
