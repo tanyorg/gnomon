@@ -1,0 +1,21 @@
+[package]
+name = "gpsmon-rs"
+version = "0.1.0"
+edition = "2021"
+description = "NMEA 0183 GNSS monitor in the spirit of gpsd's gpsmon (gpsd or raw TCP source)"
+authors = ["tany <tany@tany.org>"]
+license = "BSD-2-Clause"
+rust-version = "1.80"
+
+# Intentionally dependency-free (std only).
+
+[[bin]]
+name = "gpsmon-rs"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
