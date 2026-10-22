@@ -1,9 +1,34 @@
 #!/usr/bin/env python3
 # Mock NMEA sources for testing gnomon.
-#   mockgps.py raw  PORT  -> raw NMEA over TCP (like a serial-over-TCP bridge)
-#   mockgps.py gpsd PORT  -> fake gpsd: VERSION banner, waits for ?WATCH,
-#                            then raw NMEA lines + TPV/PPS/TOFF JSON
-import json, socket, sys, threading, time
+#   mockgps.py [--lat D] [--lon D] [--alt M] raw  PORT
+#       raw NMEA over TCP (like a serial-over-TCP bridge)
+#   mockgps.py [--lat D] [--lon D] [--alt M] gpsd PORT
+#       fake gpsd: VERSION banner, waits for ?WATCH, then raw NMEA + TPV/PPS/TOFF
+# The default position is the Royal Observatory, Greenwich (prime meridian).
+import argparse, json, socket, sys, threading, time
+
+# Decimal degrees / metres above the ellipsoid-referenced geoid.
+POS = {"lat": 51.477811, "lon": -0.001475, "alt": 46.0, "sep": 45.9}
+
+
+def set_position(lat, lon, alt=None):
+    if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+        raise ValueError("latitude must be within +-90, longitude within +-180")
+    POS["lat"], POS["lon"] = lat, lon
+    if alt is not None:
+        POS["alt"] = alt
+
+
+def nmea_coord(deg, is_lat):
+    """Decimal degrees -> ('ddmm.mmmm', 'N') / ('dddmm.mmmm', 'E')."""
+    hemi = ("N" if deg >= 0 else "S") if is_lat else ("E" if deg >= 0 else "W")
+    a = abs(deg)
+    d = int(a)
+    m = round((a - d) * 60.0, 4)
+    if m >= 60.0:  # rounding carried into the next degree
+        d, m = d + 1, 0.0
+    width = 2 if is_lat else 3
+    return f"{d:0{width}d}{m:07.4f}", hemi
 
 def ck(body):
     c = 0
@@ -15,9 +40,12 @@ def epoch(t, n):
     tm = time.gmtime(int(t))
     hms = time.strftime("%H%M%S", tm) + ".00"
     dmy = time.strftime("%d%m%y", tm)
+    la, ns = nmea_coord(POS["lat"], True)
+    lo, ew = nmea_coord(POS["lon"], False)
+    alt, sep = POS["alt"], POS["sep"]
     out = [
-        ck(f"GNRMC,{hms},A,3335.4073,N,13024.1030,E,0.012,,{dmy},,,A,V"),
-        ck(f"GNGGA,{hms},3335.4073,N,13024.1030,E,1,12,0.62,15.3,M,28.4,M,,"),
+        ck(f"GNRMC,{hms},A,{la},{ns},{lo},{ew},0.012,,{dmy},,,A,V"),
+        ck(f"GNGGA,{hms},{la},{ns},{lo},{ew},1,12,0.62,{alt:.1f},M,{sep:.1f},M,,"),
         ck("GNGSA,A,3,05,13,15,18,23,29,,,,,,,1.10,0.62,0.91,1"),
         ck("GNGSA,A,3,72,81,82,,,,,,,,,,1.10,0.62,0.91,2"),
         ck("GNGSA,A,3,04,11,,,,,,,,,,,1.10,0.62,0.91,3"),
@@ -90,5 +118,16 @@ def gpsd_handler(c):
     tick_loop(send)
 
 if __name__ == "__main__":
-    mode, port = sys.argv[1], int(sys.argv[2])
+    ap = argparse.ArgumentParser(description="mock NMEA source for gnomon")
+    ap.add_argument("--lat", type=float, default=POS["lat"], help="latitude, decimal degrees")
+    ap.add_argument("--lon", type=float, default=POS["lon"], help="longitude, decimal degrees")
+    ap.add_argument("--alt", type=float, default=POS["alt"], help="altitude in metres")
+    ap.add_argument("mode", choices=["raw", "gpsd"])
+    ap.add_argument("port", type=int)
+    a = ap.parse_args()
+    try:
+        set_position(a.lat, a.lon, a.alt)
+    except ValueError as e:
+        ap.error(str(e))
+    mode, port = a.mode, a.port
     serve(port, raw_handler if mode == "raw" else gpsd_handler)
