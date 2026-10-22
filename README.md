@@ -12,7 +12,16 @@ per-sentence statistics and the raw data stream.
 No external crates (std only). Builds with plain `cargo build` on macOS, Linux
 and the BSDs.
 
-## Build
+## Install
+
+```sh
+cargo install gnomon-gnss
+```
+
+The crate is published as `gnomon-gnss` (the name `gnomon` is taken on
+crates.io); the installed command is `gnomon`.
+
+## Build from source
 
 ```sh
 cargo build --release
