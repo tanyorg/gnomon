@@ -112,7 +112,9 @@ pub struct Sentence<'a> {
 pub fn split(line: &str) -> Option<Sentence<'_>> {
     let line = line.trim_end_matches(['\r', '\n']);
     let first = line.as_bytes().first()?;
-    if *first != b'$' && *first != b'!' {
+    // NMEA 0183 is printable ASCII by definition. Rejecting anything else
+    // also keeps every byte-index slice below on a char boundary.
+    if (*first != b'$' && *first != b'!') || !line.is_ascii() {
         return None;
     }
     let body_end = line.rfind('*');
@@ -695,6 +697,57 @@ mod tests {
             .satellites(t0 + SAT_STALE + Duration::from_millis(1))
             .iter()
             .all(|s| s.el.is_none()));
+    }
+
+    #[test]
+    fn garbage_never_panics() {
+        // Wrong baud rate / line noise: arbitrary bytes after lossy UTF-8.
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        let mut x: u32 = 0x1234_5678;
+        for _ in 0..20_000 {
+            let mut b = vec![b'$'];
+            for _ in 0..(x % 90) {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                b.push(match x % 7 {
+                    0 => b',',
+                    1 => b'*',
+                    2 => b'.',
+                    _ => (x >> 8) as u8,
+                });
+            }
+            let l = String::from_utf8_lossy(&b).into_owned();
+            n.feed(&l, t0, 0.0);
+        }
+        let _ = n.satellites(t0);
+        // Non-ASCII is rejected outright.
+        assert!(split("$GPRMC,\u{fffd}*00").is_none());
+        assert!(split("$GPGGA,1*\u{e9}").is_none());
+    }
+
+    #[test]
+    fn short_and_odd_fields_never_panic() {
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        for l in [
+            "$GPRMC",
+            "$GPRMC,",
+            "$GPRMC,1,A,1,N,1,E,,,1",
+            "$GPGGA,12,..,N,.,E",
+            "$GPZDA,999999",
+            "$GPGSV,1,1",
+            "$GPGSV,9,1,99,1",
+            "$GPGSA,A,3,,,,,,,,,,,,,,,,,,,,",
+            "$",
+            "$*",
+            "$G*Z",
+            "$GPGLL,,,,,1234567",
+            "$GPRMC,000000.00,A,00.0,N,000.0,E,0,0,999999",
+        ] {
+            n.feed(l, t0, 0.0);
+        }
     }
 
     #[test]

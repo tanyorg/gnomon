@@ -3,9 +3,11 @@
 mod app;
 mod json;
 mod nmea;
+mod serial;
 mod source;
 mod target;
 mod term;
+mod tty;
 mod ui;
 
 use source::Ev;
@@ -23,10 +25,12 @@ target (default localhost:2947):
   [ipv6]:port            IPv6 literal
   tcp://host:port        raw NMEA over TCP (never writes to the peer)
   gpsd://host[:port]     force gpsd protocol
+  /dev/ttyXXX            serial port (speed from -s, else auto-detected)
 
 options:
   -r, --raw              treat the target as raw NMEA (same as tcp://)
   -g, --gpsd             treat the target as gpsd
+  -s, --speed BPS        serial speed (default: probe 9600,115200,38400,...)
   -l, --log FILE         append every received byte to FILE
   -f, --replay FILE      play back a capture file ('-' = stdin, unpaced)
   -a, --ascii            ASCII box drawing (for ambiguous-width terminals)
@@ -41,6 +45,7 @@ keys: q quit, p pause raw window, c clear, j toggle JSON lines";
 struct Opts {
     target: Option<String>,
     force: Option<target::Proto>,
+    speed: Option<u32>,
     log: Option<String>,
     replay: Option<String>,
     ascii: bool,
@@ -53,6 +58,7 @@ fn parse_args() -> Result<Opts, String> {
     let mut o = Opts {
         target: None,
         force: None,
+        speed: None,
         log: None,
         replay: None,
         ascii: false,
@@ -75,6 +81,14 @@ fn parse_args() -> Result<Opts, String> {
             "-r" | "--raw" => o.force = Some(target::Proto::Raw),
             "-g" | "--gpsd" => o.force = Some(target::Proto::Gpsd),
             "-a" | "--ascii" => o.ascii = true,
+            "-s" | "--speed" => {
+                let v = val("--speed")?;
+                let b: u32 = v.parse().map_err(|_| format!("bad speed: {v}"))?;
+                if b < 300 {
+                    return Err(format!("bad speed: {v}"));
+                }
+                o.speed = Some(b);
+            }
             "-j" | "--json" => o.json = true,
             "-l" | "--log" => o.log = Some(val("--log")?),
             "-f" | "--replay" => o.replay = Some(val("--replay")?),
@@ -128,13 +142,6 @@ fn run(o: Opts) -> Result<(), String> {
         source::spawn_replay(path.clone(), tx.clone());
         format!("replay:{path}")
     } else {
-        let mut t = target::parse(o.target.as_deref().unwrap_or("localhost"))?;
-        if let Some(p) = o.force {
-            if p == target::Proto::Raw && t.device.is_some() {
-                return Err("--raw conflicts with a gpsd device path".into());
-            }
-            t.proto = p;
-        }
         let log = match &o.log {
             Some(p) => Some(
                 OpenOptions::new()
@@ -145,9 +152,28 @@ fn run(o: Opts) -> Result<(), String> {
             ),
             None => None,
         };
-        let label = t.display();
-        source::spawn_tcp(t, log, tx.clone());
-        label
+        let spec = o.target.as_deref().unwrap_or("localhost");
+        if spec.starts_with('/') {
+            if o.force.is_some() {
+                return Err("--raw/--gpsd do not apply to a serial device".into());
+            }
+            serial::spawn(spec.to_string(), o.speed, log, tx.clone());
+            spec.to_string()
+        } else {
+            if o.speed.is_some() {
+                return Err("--speed only applies to a serial device".into());
+            }
+            let mut t = target::parse(spec)?;
+            if let Some(p) = o.force {
+                if p == target::Proto::Raw && t.device.is_some() {
+                    return Err("--raw conflicts with a gpsd device path".into());
+                }
+                t.proto = p;
+            }
+            let label = t.display();
+            source::spawn_tcp(t, log, tx.clone());
+            label
+        }
     };
 
     let mut app = app::App::new(label, o.ascii);

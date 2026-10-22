@@ -1,4 +1,5 @@
 //! Data sources: TCP (gpsd or raw NMEA, auto-detected) and file/stdin replay.
+//! The serial source lives in `serial.rs`.
 //! Each source runs on its own thread and reports through an mpsc channel.
 
 use crate::target::{Proto, Target, GPSD_PORT};
@@ -15,6 +16,11 @@ pub enum Kind {
     Gpsd,
     Raw,
     Replay,
+    /// Direct serial port. `cdc`: USB CDC-ACM (nominal speed, no wire timing).
+    Serial {
+        speed: u32,
+        cdc: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -28,7 +34,7 @@ pub enum Ev {
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const SILENCE_RECONNECT: Duration = Duration::from_secs(15);
-const MAX_LINE: usize = 8192;
+pub const MAX_LINE: usize = 8192;
 
 fn watch_cmd(dev: Option<&str>) -> String {
     let mut s = String::from(r#"?WATCH={"enable":true,"json":true,"raw":1,"pps":true"#);

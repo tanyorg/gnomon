@@ -95,10 +95,12 @@ pub fn render(app: &App, now: Instant, wall: SystemTime, w: usize, h: usize) -> 
 fn header(c: &mut Canvas, app: &App, wall: SystemTime) {
     c.fill(0, 0, c.w, st::REV);
     let kind = match app.kind {
-        Kind::Unknown => "detecting",
-        Kind::Gpsd => "gpsd",
-        Kind::Raw => "raw NMEA/TCP",
-        Kind::Replay => "replay",
+        Kind::Unknown => "detecting".to_string(),
+        Kind::Gpsd => "gpsd".to_string(),
+        Kind::Raw => "raw NMEA/TCP".to_string(),
+        Kind::Replay => "replay".to_string(),
+        Kind::Serial { cdc: true, .. } => "serial USB CDC".to_string(),
+        Kind::Serial { speed, .. } => format!("serial {speed} 8N1"),
     };
     let state = if app.connected { "up" } else { "down" };
     let left = format!(" gpsmon-rs  {}  [{} {}]", app.target, kind, state);
@@ -263,11 +265,16 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
     } else {
         push(
             format!(
-                "Lag  {} (host-fix)",
+                "Lag  {} ({})",
                 app.nmea
                     .lag
                     .map(|l| format!("{:+.1} ms", l * 1e3))
-                    .unwrap_or("-".into())
+                    .unwrap_or("-".into()),
+                if matches!(app.kind, Kind::Serial { cdc: false, .. }) {
+                    "tx start"
+                } else {
+                    "host-fix"
+                }
             ),
             lag_style,
         );
@@ -329,7 +336,9 @@ fn sentences(c: &mut Canvas, app: &App, now: Instant, x: usize, y: usize, w: usi
         // Show the (stable) output interval; switch to elapsed time only
         // when the sentence has gone missing, so the column does not churn.
         let age = s.last.map(|t| now.duration_since(t));
-        let missing = age.map_or(true, |a| a > s.stale_after());
+        // Only periodic sentences can go missing; one-shot ones (start-up
+        // GPTXT banners etc.) never established a period.
+        let missing = s.period.is_some() && age.map_or(true, |a| a > s.stale_after());
         let col = match (missing, age, s.period) {
             (true, Some(a), _) if a.as_secs() > 99 => ">99s!".to_string(),
             (true, Some(a), _) => format!("{}s!", a.as_secs()),
