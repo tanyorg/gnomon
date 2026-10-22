@@ -2,7 +2,7 @@
 # Published as gnomon-gnss (the "gnomon" crate name is taken); the
 # installed command is still `gnomon`.
 name = "gnomon-gnss"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "GNSS/NMEA 0183 monitor modelled on gpsd's gpsmon: gpsd, raw NMEA over TCP, or serial port"
 authors = ["tany <tany@tany.org>"]

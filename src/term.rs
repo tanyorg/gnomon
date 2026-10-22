@@ -7,17 +7,32 @@ use std::sync::OnceLock;
 
 static SAVED_STTY: OnceLock<String> = OnceLock::new();
 
+/// stty(1) by absolute path, so a hostile PATH cannot substitute it.
+/// /bin/stty exists on macOS, the BSDs and usrmerged Linux; /usr/bin/stty
+/// covers the rest.
+const STTY_PATHS: [&str; 2] = ["/bin/stty", "/usr/bin/stty"];
+
+fn stty() -> io::Result<Command> {
+    STTY_PATHS
+        .iter()
+        .find(|p| std::path::Path::new(p).is_file())
+        .map(Command::new)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "stty not found in /bin or /usr/bin",
+            )
+        })
+}
+
 pub fn enter() -> io::Result<()> {
-    let out = Command::new("stty")
-        .arg("-g")
-        .stdin(Stdio::inherit())
-        .output()?;
+    let out = stty()?.arg("-g").stdin(Stdio::inherit()).output()?;
     if !out.status.success() {
         return Err(io::Error::other("stty -g failed (not a tty?)"));
     }
     let saved = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let _ = SAVED_STTY.set(saved);
-    let st = Command::new("stty")
+    let st = stty()?
         .args(["raw", "-echo"])
         .stdin(Stdio::inherit())
         .status()?;
@@ -35,7 +50,9 @@ pub fn leave() {
     let _ = o.write_all(b"\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l");
     let _ = o.flush();
     if let Some(s) = SAVED_STTY.get() {
-        let _ = Command::new("stty").arg(s).stdin(Stdio::inherit()).status();
+        if let Ok(mut c) = stty() {
+            let _ = c.arg(s).stdin(Stdio::inherit()).status();
+        }
     }
 }
 

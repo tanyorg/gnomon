@@ -11,6 +11,23 @@ pub const SAT_STALE: Duration = Duration::from_secs(10);
 /// "Used in fix" sets older than this are ignored.
 pub const USED_STALE: Duration = Duration::from_secs(5);
 
+// Resource limits. Input comes from untrusted peers (or line noise at a wrong
+// baud rate), so every table keyed by received data is bounded.
+/// Distinct sentence addresses tracked; the rest are lumped into `OTHER`.
+pub const MAX_STAT_KEYS: usize = 128;
+/// Statistics bucket for addresses beyond `MAX_STAT_KEYS`.
+pub const OTHER: &str = "~other";
+/// Longest address kept as a statistics key (real ones are 5-6 chars).
+const MAX_ADDR_LEN: usize = 16;
+/// GSV cycles in flight / completed, keyed by (talker, signal ID).
+const MAX_GSV_KEYS: usize = 64;
+/// NMEA allows 1..9 GSV messages per cycle; be lenient but bounded.
+const MAX_GSV_MSGS: u32 = 32;
+/// Satellites accepted in one GSV cycle.
+const MAX_GSV_SATS: usize = 256;
+/// "Used in fix" groups (one per GSA talker / system ID).
+const MAX_USED_KEYS: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Sys {
     Gps,
@@ -355,7 +372,14 @@ impl Nmea {
             self.apply(&snt, now, host_tod);
         }
         let seq = self.epoch_seq;
-        let st = self.stats.entry(snt.addr.to_string()).or_default();
+        let key = if snt.addr.len() > MAX_ADDR_LEN {
+            OTHER
+        } else if self.stats.contains_key(snt.addr) || self.stats.len() < MAX_STAT_KEYS {
+            snt.addr
+        } else {
+            OTHER
+        };
+        let st = self.stats.entry(key.to_string()).or_default();
         st.mark(now, seq);
         if bad {
             st.bad += 1;
@@ -488,6 +512,13 @@ impl Nmea {
             },
             (None, t) => t.to_string(),
         };
+        if !self.used.contains_key(&group) && self.used.len() >= MAX_USED_KEYS {
+            self.used
+                .retain(|_, (t, _)| now.duration_since(*t) < USED_STALE);
+            if self.used.len() >= MAX_USED_KEYS {
+                return;
+            }
+        }
         self.used.insert(group, (now, set));
     }
 
@@ -495,6 +526,9 @@ impl Nmea {
         let (Some(total), Some(num)) = (u(fl, 0), u(fl, 1)) else {
             return;
         };
+        if total == 0 || total > MAX_GSV_MSGS || num == 0 || num > total {
+            return;
+        }
         // After the 3 header fields come 4-field blocks, optionally followed
         // by a signal ID (NMEA 4.10+).
         let body = fl.len().saturating_sub(3);
@@ -508,6 +542,11 @@ impl Nmea {
         let hint = Sys::from_talker(talker).unwrap_or(Sys::Unknown);
         let key = (talker.to_string(), signal);
         if num == 1 {
+            if !self.gsv_stage.contains_key(&key) && self.gsv_stage.len() >= MAX_GSV_KEYS {
+                // Too many parallel cycles: only real talkers survive this
+                // long, so dropping the oldest partial state is fine.
+                self.gsv_stage.clear();
+            }
             self.gsv_stage.insert(key.clone(), (1, Vec::new()));
         }
         let Some(stage) = self.gsv_stage.get_mut(&key) else {
@@ -527,6 +566,10 @@ impl Nmea {
             if prn == 0 {
                 continue;
             }
+            if stage.1.len() >= MAX_GSV_SATS {
+                self.gsv_stage.remove(&key);
+                return;
+            }
             stage.1.push(GsvSat {
                 sys: Sys::refine(hint, prn),
                 prn,
@@ -535,10 +578,25 @@ impl Nmea {
                 snr: u(fl, i + 3),
             });
         }
-        stage.0 = num + 1;
         if num >= total {
             let (_, sats) = self.gsv_stage.remove(&key).unwrap();
+            if !self.gsv_done.contains_key(&key) && self.gsv_done.len() >= MAX_GSV_KEYS {
+                self.gsv_done
+                    .retain(|_, (t, _)| now.duration_since(*t) < SAT_STALE);
+                if self.gsv_done.len() >= MAX_GSV_KEYS {
+                    return;
+                }
+            }
             self.gsv_done.insert(key, (now, sats));
+        } else {
+            // num < total <= MAX_GSV_MSGS, so this cannot overflow; keep the
+            // check anyway in case the limits ever change.
+            match num.checked_add(1) {
+                Some(n) => stage.0 = n,
+                None => {
+                    self.gsv_stage.remove(&key);
+                }
+            }
         }
     }
 
@@ -725,6 +783,63 @@ mod tests {
         // Non-ASCII is rejected outright.
         assert!(split("$GPRMC,\u{fffd}*00").is_none());
         assert!(split("$GPGGA,1*\u{e9}").is_none());
+    }
+
+    #[test]
+    fn tables_are_bounded() {
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        // Flood of distinct sentence addresses.
+        for i in 0..10_000u32 {
+            n.feed(&ck(&format!("XX{i:05}")), t0, 0.0);
+        }
+        assert!(n.stats.len() <= MAX_STAT_KEYS + 1);
+        assert!(n.stats.get(OTHER).map_or(0, |s| s.count) > 9000);
+        // Over-long address goes to the overflow bucket.
+        n.feed(&ck(&format!("GP{}", "A".repeat(100))), t0, 0.0);
+        assert!(n.stats.keys().all(|k| k.len() <= MAX_ADDR_LEN));
+        // Distinct talker/signal pairs for GSV and GSA.
+        for t in 0..36u32 * 36 {
+            let a = char::from_digit(t / 36, 36).unwrap().to_ascii_uppercase();
+            let b = char::from_digit(t % 36, 36).unwrap().to_ascii_uppercase();
+            for sig in [1u8, 7, 200] {
+                n.feed(
+                    &ck(&format!("{a}{b}GSV,1,1,01,05,45,120,40,{sig}")),
+                    t0,
+                    0.0,
+                );
+            }
+            n.feed(
+                &ck(&format!("{a}{b}GSA,A,3,05,13,,,,,,,,,,,1.1,0.6,0.9")),
+                t0,
+                0.0,
+            );
+        }
+        assert!(n.gsv_done.len() <= MAX_GSV_KEYS);
+        assert!(n.gsv_stage.len() <= MAX_GSV_KEYS);
+        assert!(n.used.len() <= MAX_USED_KEYS);
+    }
+
+    #[test]
+    fn gsv_hostile_counters() {
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        // Message number at u32::MAX: used to overflow `num + 1` (debug panic).
+        n.feed(&ck("GPGSV,4294967295,4294967295,01,05,45,120,40"), t0, 0.0);
+        n.feed(&ck("GPGSV,4294967295,1,01,05,45,120,40"), t0, 0.0);
+        n.feed(&ck("GPGSV,0,0,01,05,45,120,40"), t0, 0.0);
+        n.feed(&ck("GPGSV,2,3,01,05,45,120,40"), t0, 0.0);
+        assert!(n.gsv_stage.is_empty() && n.gsv_done.is_empty());
+        // A never-ending cycle of max-length messages stays bounded.
+        n.feed(&ck("GPGSV,32,1,99,01,1,1,1"), t0, 0.0);
+        let blk: String = (1..=2000).map(|p| format!(",{p},10,10,30")).collect();
+        for m in 2..=31 {
+            n.feed(&ck(&format!("GPGSV,32,{m},99{blk}")), t0, 0.0);
+        }
+        assert!(n.gsv_stage.values().all(|(_, v)| v.len() <= MAX_GSV_SATS));
+        // Still works normally afterwards.
+        n.feed(&ck("GPGSV,1,1,01,05,45,120,40"), t0, 0.0);
+        assert_eq!(n.satellites(t0).len(), 1);
     }
 
     #[test]
