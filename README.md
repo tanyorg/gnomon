@@ -20,6 +20,21 @@ per-sentence statistics and the raw data stream.
 No external crates (std only). Builds with plain `cargo build` on macOS, Linux
 and the BSDs.
 
+## Why gnomon?
+
+Unlike many GNSS monitors, gnomon is designed for
+timing and operations work.
+
+It can monitor:
+
+- GPS receivers used for NTP
+- NTP appliances exporting NMEA
+- gpsd instances
+- Serial-attached GNSS receivers
+
+while exposing timing-related information such as
+output latency and epoch timing.
+
 ## Install
 
 ```sh
