@@ -3,6 +3,14 @@
 > **gnomon** /ˈnoʊmɒn/ — the part of a sundial that casts the shadow; an instrument
 > that reads the time from the sky. Also: **GN**SS **mon**itor.
 
+Use gnomon when:
+- Checking GNSS receivers used for NTP
+- Monitoring NMEA streams over TCP
+- Viewing satellite status on headless systems
+- Troubleshooting GPS timing outputs
+
+![gnomon showing a serial NMEA receiver: satellites, fix, sentence statistics and raw data](gnomon.png)
+
 An NMEA 0183 monitor written in Rust, modelled on `gpsmon` from gpsd.
 It reads from gpsd over the network, from a TCP port carrying raw NMEA
 (a serial-to-TCP bridge, the NMEA output of an NTP appliance, ...), or from a
