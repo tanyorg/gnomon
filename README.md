@@ -42,7 +42,10 @@ cargo install gnomon-gnss
 ```
 
 The crate is published as `gnomon-gnss` (the name `gnomon` is taken on
-crates.io); the installed command is `gnomon`.
+crates.io). It installs two commands:
+
+- `gnomon` — the NMEA monitor described below
+- `metronomon` — a PPS monitor for the Linux PPS API (see [metronomon](#metronomon))
 
 ## Build from source
 
@@ -174,6 +177,46 @@ gnomon /dev/cu.usbserial-110     # macOS
   configuration, etc.).
 - With gpsd, `raw:1` is used, so binary protocols only appear as hex lines in
   the raw window.
+
+## metronomon
+
+`metronomon` watches pulse-per-second signals through the Linux PPS API
+(RFC 2783, `/dev/ppsN`) and shows how steady the beat is.
+
+```sh
+metronomon                         # /dev/pps0
+metronomon /dev/pps0 /dev/pps1     # several sources side by side
+metronomon sim:gpio sim:bad        # simulated sources (any OS)
+```
+
+- Reading uses `PPS_FETCH`, which is **non-destructive**: metronomon can run
+  next to chronyd or ntpd using the same device without disturbing them.
+- **offset** = the system clock reading at the pulse minus the nearest UTC
+  second (positive: the system clock is ahead). With a clock disciplined from
+  that very PPS this is the residual; otherwise it is the clock error.
+- Per source: last pulse, sequence number, interval to the previous second,
+  pulse width (when the clear edge is captured), statistics over the last
+  1 and 10 minutes (n, mean, standard deviation, min, max, and `drms`, the RMS
+  of differences between consecutive seconds), and a sparkline of the
+  per-second offsets.
+- Each pulse is assigned to the UTC second it is closest to. A second without
+  a pulse counts as **missing** (red `!` in the sparkline); a pulse more than
+  100 ms away from the recent median is an **extra** pulse (glitch, ringing)
+  and is left out of the statistics. **reader-gaps** are kernel events that
+  metronomon did not get to see (sequence numbers skipped). After a clock step
+  the reference is re-established automatically.
+- A source that stops pulsing is shown as `NO PULSE for Ns`.
+- Permission problems come with a hint: `/dev/ppsN` is often root-only
+  (`crw------- root`). Use `sudo`, add yourself to the device's group, or add a
+  udev rule such as
+  `KERNEL=="pps0", GROUP="dialout", MODE="0660"`.
+- Simulation profiles: `gpio` (a few µs of jitter), `uart` (sub-µs, with a
+  100 ms pulse width), `usb` (sub-ms jitter of a USB serial adapter, occasional
+  missing pulse) and `bad` (missing and extra pulses).
+- On systems without the Linux PPS API (macOS etc.) only the simulated sources
+  are available.
+
+Keys: `q` quit / `c` clear statistics
 
 ## Acknowledgements
 

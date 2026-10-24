@@ -1,16 +1,16 @@
 [package]
 # Published as gnomon-gnss (the "gnomon" crate name is taken); the
-# installed command is still `gnomon`.
+# installed commands are `gnomon` and `metronomon`.
 name = "gnomon-gnss"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
-description = "GNSS/NMEA 0183 monitor modelled on gpsd's gpsmon: gpsd, raw NMEA over TCP, or serial port"
+description = "GNSS timing tools: gnomon, an NMEA 0183 monitor modelled on gpsd's gpsmon (gpsd, raw NMEA over TCP, serial), and metronomon, a Linux PPS monitor"
 authors = ["tany <tany@tany.org>"]
 license = "BSD-2-Clause"
 rust-version = "1.80"
 repository = "https://github.com/tanyorg/gnomon"
 readme = "README.md"
-keywords = ["gnss", "gps", "nmea", "ntp", "gpsd"]
+keywords = ["gnss", "gps", "nmea", "ntp", "pps"]
 categories = ["command-line-utilities", "hardware-support"]
 exclude = ["/tools", "/.gitignore", "/gnomon.png"]
 
@@ -19,6 +19,10 @@ exclude = ["/tools", "/.gitignore", "/gnomon.png"]
 [[bin]]
 name = "gnomon"
 path = "src/main.rs"
+
+[[bin]]
+name = "metronomon"
+path = "src/bin/metronomon.rs"
 
 [profile.release]
 opt-level = 3

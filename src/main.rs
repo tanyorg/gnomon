@@ -1,16 +1,7 @@
 //! gnomon: NMEA 0183 GNSS monitor modelled on gpsd's gpsmon.
 
-mod app;
-mod json;
-mod nmea;
-mod serial;
-mod source;
-mod target;
-mod term;
-mod tty;
-mod ui;
-
-use source::Ev;
+use gnomon_gnss::source::Ev;
+use gnomon_gnss::{app, serial, source, target, term, ui};
 use std::fs::OpenOptions;
 use std::io::{IsTerminal, Read};
 use std::sync::mpsc;

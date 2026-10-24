@@ -238,8 +238,10 @@ impl Canvas {
     }
 }
 
+/// Box drawing (U+2500..257F) and block elements (U+2580..259F, used for
+/// sparklines) are the only non-ASCII characters allowed on the canvas.
 fn is_box(c: char) -> bool {
-    ('\u{2500}'..='\u{257F}').contains(&c)
+    ('\u{2500}'..='\u{259F}').contains(&c)
 }
 
 /// Holds the previously drawn lines so only changes are written.
