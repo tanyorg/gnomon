@@ -17,6 +17,9 @@ pub const RECENT_KEEP: usize = 200;
 pub const ONTIME_NS: i64 = 100_000_000;
 /// No pulse for this long is shown as a stall.
 pub const STALL: Duration = Duration::from_millis(2500);
+/// A fetch timeout only counts when the last pulse (or the open) is at least
+/// this old; the kernel can report one spuriously right after opening.
+pub const TIMEOUT_GAP: Duration = Duration::from_millis(1500);
 const NS: i64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,6 +94,7 @@ pub struct Track {
     pub hist: VecDeque<Sample>,
     pub last_pulse: Option<Pulse>,
     pub last_at: Option<Instant>,
+    pub opened_at: Option<Instant>,
     /// Offset that on-time pulses cluster around (median of recent ones).
     reference: Option<i64>,
     /// Consecutive off-time pulses, to re-baseline after a clock step.
@@ -123,6 +127,7 @@ impl Track {
             hist: VecDeque::new(),
             last_pulse: None,
             last_at: None,
+            opened_at: None,
             reference: None,
             off_run: Vec::new(),
             total: 0,
@@ -317,9 +322,15 @@ impl App {
                 t.name = name;
                 t.caps = caps;
                 t.state = State::Ok;
+                t.opened_at = Some(now);
             }
             Ev::Timeout(i) => {
-                self.tracks[i].timeouts += 1;
+                let t = &mut self.tracks[i];
+                if let Some(since) = t.last_at.or(t.opened_at) {
+                    if now.duration_since(since) >= TIMEOUT_GAP {
+                        t.timeouts += 1;
+                    }
+                }
             }
             Ev::Error(i, e) => {
                 self.tracks[i].state = State::Error(e);
@@ -575,63 +586,104 @@ fn track_box(c: &mut Canvas, t: &Track, now: Instant, y: usize, w: usize, h: usi
     }
 }
 
+/// Half-range of the sparkline: robust against outliers (median + 4 robust
+/// sigma from the MAD), so one transient does not flatten the rest.
+pub fn spark_range(vals: &[i64]) -> i64 {
+    if vals.is_empty() {
+        return 1;
+    }
+    let mut v = vals.to_vec();
+    v.sort_unstable();
+    let med = v[v.len() / 2];
+    let mut dev: Vec<i64> = v.iter().map(|x| (x - med).abs()).collect();
+    dev.sort_unstable();
+    let mad = dev[dev.len() / 2];
+    let r = if mad > 0 {
+        med.abs() + (4.0 * 1.4826 * mad as f64).ceil() as i64
+    } else {
+        // all (but a few) identical: fall back to the largest magnitude
+        v.iter().map(|x| x.abs()).max().unwrap_or(0)
+    };
+    r.max(1)
+}
+
+/// Per-second offsets as bars growing up (positive) or down (negative) from a
+/// zero line in the middle. Values beyond the robust range are clipped and
+/// drawn in yellow; seconds without a pulse show a red `!` on the zero line.
 fn sparkline(c: &mut Canvas, t: &Track, unit: Unit, x: usize, y: usize, w: usize, rows: usize) {
     const LABEL: usize = 11;
-    if w <= LABEL + 4 {
+    let rows = rows & !1; // need an even number: half up, half down
+    if w <= LABEL + 4 || rows < 2 {
         return;
     }
+    let half = rows / 2;
+    let levels = (half * 8) as f64;
     let cols = w - LABEL - 1;
     let Some(last) = t.hist.back() else { return };
     let first_sec = last.sec - cols as i64 + 1;
-    let mut series: Vec<Option<i64>> = vec![None; cols];
-    let mut have = vec![false; cols];
     let oldest = t.hist.front().map(|s| s.sec).unwrap_or(last.sec);
+    let mut series: Vec<Option<i64>> = vec![None; cols];
     for s in t.hist.iter().filter(|s| s.sec >= first_sec) {
-        let i = (s.sec - first_sec) as usize;
-        series[i] = Some(s.offset_ns);
-        have[i] = true;
+        series[(s.sec - first_sec) as usize] = Some(s.offset_ns);
     }
     let vals: Vec<i64> = series.iter().flatten().copied().collect();
-    let (lo, hi) = (*vals.iter().min().unwrap(), *vals.iter().max().unwrap());
-    let span = (hi - lo).max(1) as f64;
-    let levels = rows * 8;
+    let range = spark_range(&vals);
+
+    // Bottom-aligned eighths; a top-aligned k/8 cell is drawn as the
+    // (8-k)/8 bottom block in reverse video.
     let blocks = [
         ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
         '\u{2588}',
     ];
     let ascii = [' ', '.', '.', ':', ':', '|', '|', '#', '#'];
+
     for r in 0..rows {
-        let label = match r {
-            0 => unit.num(hi as f64),
-            _ if r == rows - 1 => unit.num(lo as f64),
-            _ => String::new(),
+        let label = if r == 0 {
+            unit.num(range as f64)
+        } else if r == rows - 1 {
+            unit.num(-(range as f64))
+        } else if r == half - 1 {
+            "0 ".to_string()
+        } else {
+            String::new()
         };
-        c.put(
-            x,
-            y + r,
-            &format!("{label:>width$}", width = LABEL),
-            st::DIM,
-        );
+        c.put(x, y + r, &format!("{label:>LABEL$}"), st::DIM);
     }
     for (i, v) in series.iter().enumerate() {
         let sec = first_sec + i as i64;
         let cx = x + LABEL + 1 + i;
-        match v {
-            Some(v) => {
-                let lvl = (((v - lo) as f64 / span) * (levels - 1) as f64).round() as usize + 1;
-                for r in 0..rows {
-                    // row 0 is the top
-                    let base = (rows - 1 - r) * 8;
-                    let fill = lvl.saturating_sub(base).min(8);
-                    let ch = if c.ascii { ascii[fill] } else { blocks[fill] };
-                    c.put(cx, y + r, &ch.to_string(), st::CYAN);
+        let Some(v) = *v else {
+            if sec >= oldest {
+                c.put(cx, y + half - 1, "!", st::RED | st::BOLD);
+            }
+            continue;
+        };
+        let clipped = v.abs() > range;
+        let lvl = ((v.abs().min(range) as f64 / range as f64) * levels).round() as usize;
+        let lvl = lvl.max(1); // always show at least a sliver
+        for k in 0..half {
+            let fill = lvl.saturating_sub(k * 8).min(8);
+            let outer = k == half - 1;
+            let style = if clipped && outer {
+                st::YELLOW | st::BOLD
+            } else {
+                st::CYAN
+            };
+            if v >= 0 {
+                // rows half-1 (just above zero) up to 0
+                let ch = if c.ascii { ascii[fill] } else { blocks[fill] };
+                c.put(cx, y + half - 1 - k, &ch.to_string(), style);
+            } else {
+                // rows half (just below zero) down to rows-1, filled from the top
+                let cy = y + half + k;
+                if c.ascii {
+                    c.put(cx, cy, &ascii[fill].to_string(), style);
+                } else if fill == 8 {
+                    c.put(cx, cy, &blocks[8].to_string(), style);
+                } else if fill > 0 {
+                    c.put(cx, cy, &blocks[8 - fill].to_string(), style | st::REV);
                 }
             }
-            None if sec >= oldest => {
-                // A second inside the history without an on-time pulse.
-                c.put(cx, y + rows - 1, "!", st::RED | st::BOLD);
-            }
-            None => {}
         }
     }
 }
@@ -770,6 +822,38 @@ mod tests {
     }
 
     #[test]
+    fn spark_range_ignores_transients() {
+        // pi4 start-up: a minute of +-300 us excursions, then +-4 us
+        let mut v: Vec<i64> = (0..40)
+            .map(|i| if i % 2 == 0 { 300_000 } else { -330_000 })
+            .collect();
+        v.extend((0..80).map(|i| (i % 9 - 4) * 1000));
+        let r = spark_range(&v);
+        assert!(r > 4_000 && r < 60_000, "{r}");
+        assert_eq!(spark_range(&[]), 1);
+        assert_eq!(spark_range(&[5, 5, 5]), 5);
+        assert_eq!(spark_range(&[0, 0]), 1);
+    }
+
+    #[test]
+    fn startup_timeout_not_counted() {
+        let mut app = App::new(vec!["x".into()], false);
+        let t0 = Instant::now();
+        app.handle(crate::pps::Ev::Opened(0, "n".into(), Caps::default()), t0);
+        app.handle(crate::pps::Ev::Timeout(0), t0 + Duration::from_millis(200));
+        assert_eq!(app.tracks[0].timeouts, 0);
+        app.handle(
+            crate::pps::Ev::Pulse(0, pulse(1, 100, 10)),
+            t0 + Duration::from_millis(500),
+        );
+        app.handle(crate::pps::Ev::Timeout(0), t0 + Duration::from_millis(900));
+        assert_eq!(app.tracks[0].timeouts, 0);
+        // genuinely nothing for 2 s
+        app.handle(crate::pps::Ev::Timeout(0), t0 + Duration::from_millis(2600));
+        assert_eq!(app.tracks[0].timeouts, 1);
+    }
+
+    #[test]
     fn render_sizes_never_panic() {
         let mut app = App::new(
             vec!["/dev/pps0".into(), "sim:uart".into(), "sim:bad".into()],
@@ -799,3 +883,4 @@ mod tests {
         }
     }
 }
+
