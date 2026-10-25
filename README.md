@@ -3,30 +3,55 @@
 > **gnomon** /ˈnoʊmɒn/ — the part of a sundial that casts the shadow; an instrument
 > that reads the time from the sky. Also: **GN**SS **mon**itor.
 
-Two small terminal tools for GNSS timing and NTP operations work:
+Terminal tools for people who run NTP servers on GNSS receivers.
+
+There are plenty of GPS viewers. They show where you are and which satellites
+are in view. For an NTP server that is the least interesting part. What you
+actually need to know is:
+
+- **Is the NMEA output coming out every second?** Every sentence, every epoch,
+  nothing dropped, no checksum errors.
+- **When does it come out?** How long after the UTC second the receiver
+  starts talking, and whether that drifts.
+- **Is the PPS steady?** Second by second, not as a filtered average.
+- **Is anything missing or extra?** A lost pulse, a glitch, a sentence that
+  quietly stopped.
+
+gnomon-gnss answers these with two small commands:
 
 - **`gnomon`** — an NMEA 0183 monitor modelled on `gpsmon` from gpsd. Reads
-  from gpsd, from a TCP port carrying raw NMEA, or from a serial port.
+  from gpsd, from a TCP port carrying raw NMEA (the NMEA output of an NTP
+  appliance, a serial-to-TCP bridge), or from a serial port. Shows per-epoch
+  output timing (`Lag`), per-sentence intervals and dropouts, alongside the
+  usual satellites and fix.
 - **`metronomon`** — a pulse-per-second monitor for the Linux PPS API
-  (`/dev/ppsN`), safe to run next to chronyd or ntpd.
+  (`/dev/ppsN`). Shows every pulse's offset, 1 and 10 minute statistics,
+  second-to-second jitter, and missing or extra pulses. It only reads, so it
+  runs next to chronyd or ntpd on the same device without disturbing them.
 
-No external crates (std only).
+No external crates (std only). Read-only by design: neither tool ever writes
+to a receiver.
 
 ![gnomon showing a serial NMEA receiver: satellites, fix, sentence statistics and raw data](gnomon.png)
 
-## Why gnomon?
+## Why another tool?
 
-Most GNSS monitors are built around position. gnomon is built around time:
-it is meant for the receivers, NTP appliances and gpsd instances that sit
-behind an NTP server, and it shows what matters there:
+| Tool | Tells you | Does not tell you |
+|---|---|---|
+| `gpsmon`, `cgps`, vendor GUIs | position, satellites, receiver configuration | when the output arrives, which sentences dropped out |
+| `ppstest` | raw PPS timestamps | statistics, missing pulses, trends |
+| `chronyc sources` / `ntpq -p` | the filtered result after the servo | what each individual pulse or epoch did |
+| **gnomon / metronomon** | output timing, regularity, dropouts and per-pulse jitter, live | (not a replacement for the above) |
 
-- when each epoch's NMEA output actually arrives, relative to the UTC second
-  it describes (`Lag`)
-- how regularly every sentence type is emitted, and which ones went missing
-- checksum errors, satellites and the fix, on a plain terminal over SSH
+Typical uses:
 
-metronomon does the same for the PPS signal itself: how steady the beat is,
-second by second, and whether any pulse is missing or extra.
+- Evaluating a GNSS receiver or an NTP appliance before putting it into
+  service: how late is its NMEA, how clean is its PPS.
+- Comparing several PPS sources side by side on one host.
+- Checking that a time server's reference is still healthy, over SSH, without
+  stopping chronyd, ntpd or gpsd.
+- Finding patterns the servo hides: a periodic disturbance, a jitter that
+  alternates every second, an occasional lost pulse.
 
 ## Install
 

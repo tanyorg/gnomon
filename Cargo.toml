@@ -4,7 +4,7 @@
 name = "gnomon-gnss"
 version = "0.2.0"
 edition = "2021"
-description = "GNSS timing tools: gnomon, an NMEA 0183 monitor modelled on gpsd's gpsmon (gpsd, raw NMEA over TCP, serial), and metronomon, a Linux PPS monitor"
+description = "Monitors for NTP servers on GNSS receivers: gnomon shows NMEA output timing, regularity and dropouts (gpsd, raw TCP, serial); metronomon shows per-pulse PPS offset and jitter via the Linux PPS API"
 authors = ["tany <tany@tany.org>"]
 license = "BSD-2-Clause"
 rust-version = "1.80"
