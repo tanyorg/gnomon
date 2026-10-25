@@ -289,6 +289,30 @@ pub struct App {
     pub tracks: Vec<Track>,
     pub recent: VecDeque<Recent>,
     pub ascii: bool,
+    /// Name of the machine the PPS sources are attached to.
+    pub host: String,
+}
+
+extern "C" {
+    fn gethostname(name: *mut std::ffi::c_char, len: usize) -> i32;
+}
+
+/// Short host name (up to the first dot), or "?" if unavailable.
+pub fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: gethostname writes at most buf.len() bytes into buf.
+    let r = unsafe { gethostname(buf.as_mut_ptr() as *mut std::ffi::c_char, buf.len()) };
+    if r != 0 {
+        return "?".into();
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).into_owned();
+    let short = name.split('.').next().unwrap_or("").to_string();
+    if short.is_empty() {
+        "?".into()
+    } else {
+        short
+    }
 }
 
 impl App {
@@ -297,6 +321,7 @@ impl App {
             tracks: labels.into_iter().map(Track::new).collect(),
             recent: VecDeque::new(),
             ascii,
+            host: hostname(),
         }
     }
 
@@ -441,9 +466,10 @@ pub fn render(app: &App, now: Instant, wall: SystemTime, w: usize, h: usize) -> 
         return c;
     }
     c.fill(0, 0, w, st::REV);
-    let left = format!(" metronomon  {} source(s)", app.tracks.len());
+    let host: String = app.host.chars().take(32).collect();
+    let left = format!(" metronomon @ {host}  {} source(s)", app.tracks.len());
     c.put(0, 0, &left, st::REV | st::BOLD);
-    let right = format!("host {} ", fmt_utc(wall));
+    let right = format!("clock {} ", fmt_utc(wall));
     c.put(w - right.len(), 0, &right, st::REV);
 
     let n = app.tracks.len().max(1);
@@ -854,6 +880,21 @@ mod tests {
     }
 
     #[test]
+    fn hostname_in_header() {
+        let h = hostname();
+        assert!(!h.is_empty() && !h.contains('.'));
+        let mut app = App::new(vec!["sim:gpio".into()], true);
+        app.host = "ghost".into();
+        let c = render(&app, Instant::now(), SystemTime::now(), 100, 30);
+        assert!(c
+            .text()
+            .lines()
+            .next()
+            .unwrap()
+            .contains("metronomon @ ghost"));
+    }
+
+    #[test]
     fn render_sizes_never_panic() {
         let mut app = App::new(
             vec!["/dev/pps0".into(), "sim:uart".into(), "sim:bad".into()],
@@ -883,4 +924,3 @@ mod tests {
         }
     }
 }
-

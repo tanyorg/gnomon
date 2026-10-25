@@ -194,6 +194,8 @@ metronomon sim:gpio sim:bad        # simulated sources (any OS)
 - **offset** = the system clock reading at the pulse minus the nearest UTC
   second (positive: the system clock is ahead). With a clock disciplined from
   that very PPS this is the residual; otherwise it is the clock error.
+- The header shows the host name (up to the first dot) and the system clock,
+  so screenshots from several machines can be told apart.
 - Per source: last pulse, sequence number, interval to the previous second,
   pulse width (when the clear edge is captured), statistics over the last
   1 and 10 minutes (n, mean, standard deviation, min, max, and `drms`, the RMS
