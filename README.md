@@ -3,37 +3,30 @@
 > **gnomon** /ˈnoʊmɒn/ — the part of a sundial that casts the shadow; an instrument
 > that reads the time from the sky. Also: **GN**SS **mon**itor.
 
-Use gnomon when:
-- Checking GNSS receivers used for NTP
-- Monitoring NMEA streams over TCP
-- Viewing satellite status on headless systems
-- Troubleshooting GPS timing outputs
+Two small terminal tools for GNSS timing and NTP operations work:
+
+- **`gnomon`** — an NMEA 0183 monitor modelled on `gpsmon` from gpsd. Reads
+  from gpsd, from a TCP port carrying raw NMEA, or from a serial port.
+- **`metronomon`** — a pulse-per-second monitor for the Linux PPS API
+  (`/dev/ppsN`), safe to run next to chronyd or ntpd.
+
+No external crates (std only).
 
 ![gnomon showing a serial NMEA receiver: satellites, fix, sentence statistics and raw data](gnomon.png)
 
-An NMEA 0183 monitor written in Rust, modelled on `gpsmon` from gpsd.
-It reads from gpsd over the network, from a TCP port carrying raw NMEA
-(a serial-to-TCP bridge, the NMEA output of an NTP appliance, ...), or from a
-receiver attached directly to a serial port, and shows satellites, the fix,
-per-sentence statistics and the raw data stream.
-
-No external crates (std only). Builds with plain `cargo build` on macOS, Linux
-and the BSDs.
-
 ## Why gnomon?
 
-Unlike many GNSS monitors, gnomon is designed for
-timing and operations work.
+Most GNSS monitors are built around position. gnomon is built around time:
+it is meant for the receivers, NTP appliances and gpsd instances that sit
+behind an NTP server, and it shows what matters there:
 
-It can monitor:
+- when each epoch's NMEA output actually arrives, relative to the UTC second
+  it describes (`Lag`)
+- how regularly every sentence type is emitted, and which ones went missing
+- checksum errors, satellites and the fix, on a plain terminal over SSH
 
-- GPS receivers used for NTP
-- NTP appliances exporting NMEA
-- gpsd instances
-- Serial-attached GNSS receivers
-
-while exposing timing-related information such as
-output latency and epoch timing.
+metronomon does the same for the PPS signal itself: how steady the beat is,
+second by second, and whether any pulse is missing or extra.
 
 ## Install
 
@@ -41,24 +34,30 @@ output latency and epoch timing.
 cargo install gnomon-gnss
 ```
 
-The crate is published as `gnomon-gnss` (the name `gnomon` is taken on
-crates.io). It installs two commands:
+Requires Rust 1.80 or later. The crate is published as `gnomon-gnss` (the
+name `gnomon` is taken on crates.io); it installs the commands `gnomon` and
+`metronomon`.
 
-- `gnomon` — the NMEA monitor described below
-- `metronomon` — a PPS monitor for the Linux PPS API (see [metronomon](#metronomon))
+| | macOS | Linux | BSDs |
+|---|---|---|---|
+| gnomon (gpsd, TCP, serial) | yes | yes | yes |
+| metronomon, `/dev/ppsN` | – | yes | – |
+| metronomon, simulated sources | yes | yes | yes |
 
 ## Build from source
 
 ```sh
 cargo build --release
 ./target/release/gnomon ntp.example.net:4001
+./target/release/metronomon /dev/pps0
 ```
 
 For a Raspberry Pi and similar, build on the target itself, or cross-compile,
 e.g. `cargo zigbuild --release --target aarch64-unknown-linux-gnu` from macOS.
-Requires Rust 1.80 or later.
 
-## Usage
+## gnomon
+
+### Usage
 
 ```
 gnomon [options] [target]
@@ -89,7 +88,7 @@ options:
 Keys: `q` quit / `p` (or space) pause the raw window / `c` clear statistics /
 `j` toggle JSON lines
 
-## Protocol auto-detection
+### Protocol auto-detection
 
 Decided by the first non-whitespace byte received after connecting:
 
@@ -103,7 +102,7 @@ Decided by the first non-whitespace byte received after connecting:
 After 15 seconds without data, or on disconnect, it reconnects automatically
 (back-off 1→2→4→8 s, reset once data is received).
 
-## Serial input
+### Serial input
 
 ```sh
 gnomon /dev/ttyAMA0              # auto-detect speed
@@ -132,18 +131,13 @@ gnomon /dev/cu.usbserial-110     # macOS
 - **Do not open a device that gpsd is using.** Both would read from it, steal
   bytes from each other, and both would see corrupted data. gnomon also
   changes the line settings, so gpsd may need a restart afterwards.
-- `Lag (tx start)`: on a serial port, the time each line's first byte went out
-  on the wire is estimated as "chunk arrival time − bytes that followed ×
-  10 bits / speed". The value is therefore close to the offset between the
-  moment the receiver started sending the epoch and the UTC second (the
-  latency timer of a USB serial adapter, 16 ms by default for FTDI, still
-  remains). Estimated line times are clamped to be monotonic.
-- **USB CDC-ACM devices** (macOS `cu.usbmodem*`, Linux `ttyACM*`; u-blox and
-  other receivers with native USB) have only a nominal baud rate and deliver
-  data in USB transfers, so no back-dating is done and the arrival time is used
-  as-is. The header shows `serial USB CDC` and Lag shows `(host-fix)`.
+- On a serial port, line times are back-dated to the first byte on the wire
+  (see `Lag (tx start)` below). **USB CDC-ACM devices** (macOS
+  `cu.usbmodem*`, Linux `ttyACM*`; u-blox and other receivers with native
+  USB) have only a nominal baud rate and deliver data in USB transfers, so
+  there the arrival time is used as-is; the header shows `serial USB CDC`.
 
-## Screen
+### Screen
 
 - **Satellites**: system / PRN / elevation / azimuth / C/N0 / used in fix.
   With NMEA 4.10+, C/N0 per GSV signal ID is shown separated by `/`.
@@ -151,11 +145,18 @@ gnomon /dev/cu.usbserial-110     # macOS
   from the talker, and from the PRN range for the GN talker. SBAS (33-64,
   120-158) and QZSS (193-202) reported under the GPS talker are shown as their
   own systems.
-- **Fix**: merged from RMC/GGA/GNS/GLL/ZDA/VTG/GSA/GST/TXT.
-  - `Lag (host-fix)`: host receive time of the first time-bearing sentence of
-    each epoch minus the UTC time in that sentence. The sum of receiver output
-    delay, network delay and host clock error; useful for checking NMEA output
-    timing.
+- **Fix**: merged from RMC/GGA/GNS/GLL/ZDA/VTG/GSA/GST/TXT, plus **Lag**:
+  the time the first time-bearing sentence of each epoch reached the host,
+  minus the UTC time in that sentence. It is the sum of the receiver's output
+  delay, transport delay and host clock error. Two variants:
+  - `Lag (host-fix)`: network, gpsd and USB CDC sources. The arrival time is
+    used as-is.
+  - `Lag (tx start)`: serial ports. The moment the line's first byte went out
+    on the wire is estimated as "chunk arrival time − bytes that followed ×
+    10 bits / speed", so the value is close to when the receiver started
+    sending the epoch (the latency timer of a USB serial adapter, 16 ms by
+    default for FTDI, still remains). Estimated line times are clamped to be
+    monotonic.
 - **Sentences**: count and output interval (Intvl) per address. The interval is
   an EWMA of arrival intervals measured per NMEA epoch (a change of the time in
   RMC/GGA etc.), so sentences such as GSV that arrive several times per epoch
@@ -169,7 +170,7 @@ gnomon /dev/cu.usbserial-110     # macOS
 - **Raw data**: raw lines with host receive time (UTC, ms). Lines without a
   checksum are yellow, lines with a bad checksum red.
 
-## Differences from gpsd's gpsmon
+### Differences from gpsd's gpsmon
 
 - NMEA 0183 only. No per-driver panels for binary protocols such as UBX, SiRF
   or TSIP.
@@ -181,44 +182,82 @@ gnomon /dev/cu.usbserial-110     # macOS
 ## metronomon
 
 `metronomon` watches pulse-per-second signals through the Linux PPS API
-(RFC 2783, `/dev/ppsN`) and shows how steady the beat is.
+(RFC 2783) and shows how steady the beat is.
 
 ```sh
 metronomon                         # /dev/pps0
-metronomon /dev/pps0 /dev/pps1     # several sources side by side
+metronomon /dev/pps0 /dev/pps1     # several sources side by side (up to 8)
 metronomon sim:gpio sim:bad        # simulated sources (any OS)
 ```
+
+![metronomon watching a simulated GPIO source and a serial PPS: per-second offsets, 1 and 10 minute statistics, sparklines and recent pulses](metronomon.png)
+
+### Usage
+
+```
+metronomon [options] [source ...]
+
+source (default /dev/pps0):
+  /dev/ppsN              Linux PPS API device (RFC 2783); read-only and
+                         non-destructive, safe to run next to chronyd/ntpd
+  sim[:PROFILE]          simulated source: gpio (default), uart, usb, bad
+
+options:
+  -a, --ascii            ASCII drawing (for ambiguous-width terminals)
+      --snapshot SECS    no TUI: run SECS seconds, print one screen, exit
+      --size WxH         canvas size for --snapshot (default 100x40)
+  -h, --help             this help
+  -V, --version          version
+```
+
+Keys: `q` quit / `c` clear statistics
+
+### How it works
 
 - Reading uses `PPS_FETCH`, which is **non-destructive**: metronomon can run
   next to chronyd or ntpd using the same device without disturbing them.
 - **offset** = the system clock reading at the pulse minus the nearest UTC
   second (positive: the system clock is ahead). With a clock disciplined from
   that very PPS this is the residual; otherwise it is the clock error.
-- The header shows the host name (up to the first dot) and the system clock,
-  so screenshots from several machines can be told apart.
-- Per source: last pulse, sequence number, interval to the previous second,
-  pulse width (when the clear edge is captured), statistics over the last
-  1 and 10 minutes (n, mean, standard deviation, min, max, and `drms`, the RMS
-  of differences between consecutive seconds), and a sparkline of the
-  per-second offsets.
 - Each pulse is assigned to the UTC second it is closest to. A second without
-  a pulse counts as **missing** (red `!` in the sparkline); a pulse more than
-  100 ms away from the recent median is an **extra** pulse (glitch, ringing)
-  and is left out of the statistics. **reader-gaps** are kernel events that
-  metronomon did not get to see (sequence numbers skipped). After a clock step
-  the reference is re-established automatically.
-- A source that stops pulsing is shown as `NO PULSE for Ns`.
+  a pulse counts as **missing**; a pulse more than 100 ms away from the recent
+  median is an **extra** pulse (glitch, ringing) and is left out of the
+  statistics. **reader-gaps** are kernel events that metronomon did not get
+  to see (sequence numbers skipped). After a clock step the reference is
+  re-established automatically.
 - Permission problems come with a hint: `/dev/ppsN` is often root-only
   (`crw------- root`). Use `sudo`, add yourself to the device's group, or add a
-  udev rule such as
-  `KERNEL=="pps0", GROUP="dialout", MODE="0660"`.
+  udev rule such as `KERNEL=="pps0", GROUP="dialout", MODE="0660"`.
 - Simulation profiles: `gpio` (a few µs of jitter), `uart` (sub-µs, with a
   100 ms pulse width), `usb` (sub-ms jitter of a USB serial adapter, occasional
   missing pulse) and `bad` (missing and extra pulses).
-- On systems without the Linux PPS API (macOS etc.) only the simulated sources
-  are available.
 
-Keys: `q` quit / `c` clear statistics
+### Reading the screen
+
+The header shows the host name and the system clock, so screenshots from
+several machines can be told apart. Each source gets a box with:
+
+- **status line**: state, sequence number, last offset, interval to the
+  previous second, and the pulse width when the clear edge is captured
+- **statistics** over the last 1 and 10 minutes: n, mean, standard deviation,
+  min, max, and `drms`, the RMS of differences between consecutive seconds
+  (about `sd`×√2 for white noise; above that, consecutive offsets alternate,
+  below it, the offset wanders slowly)
+- **counters**: pulses, missing, extra, reader-gaps, timeouts, re-baselined
+- **sparkline** of the per-second offsets, newest on the right, centred on
+  zero, with a robust scale (|median| + 4 × MAD)
+
+| Indication | Meaning |
+|---|---|
+| `OK` (green) | pulses arriving |
+| `waiting for pulses` (yellow) | device open, no pulse seen yet |
+| `NO PULSE for Ns` (red) | no pulse for more than 2.5 s |
+| `ERROR ...` (red) | open or fetch failed; see the hint |
+| counters in yellow | at least one missing, extra or reader-gap event |
+| yellow bar tip in the sparkline | offset outside the scale, bar clipped |
+| red `!` in the sparkline | no pulse in that second |
+| red line in the event log | pulses missing before this one |
+| yellow line in the event log | extra pulse, not counted |
 
 ## Acknowledgements
 

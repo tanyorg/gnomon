@@ -12,7 +12,7 @@ repository = "https://github.com/tanyorg/gnomon"
 readme = "README.md"
 keywords = ["gnss", "gps", "nmea", "ntp", "pps"]
 categories = ["command-line-utilities", "hardware-support"]
-exclude = ["/tools", "/.gitignore", "/gnomon.png"]
+exclude = ["/tools", "/.gitignore", "/*.png"]
 
 # Intentionally dependency-free (std only).
 
