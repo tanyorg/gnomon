@@ -195,6 +195,9 @@ gnomon /dev/cu.usbserial-110     # macOS
 - **Raw data**: raw lines with host receive time (UTC, ms). Lines without a
   checksum are yellow, lines with a bad checksum red.
 
+For a field-by-field reference (sentence sources, codes, colours), see
+[docs/fields.md](https://github.com/tanyorg/gnomon/blob/main/docs/fields.md).
+
 ### Differences from gpsd's gpsmon
 
 - NMEA 0183 only. No per-driver panels for binary protocols such as UBX, SiRF
