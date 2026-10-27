@@ -257,6 +257,21 @@ For the full reference (thresholds, how to read drms against sd, sparkline
 scale, colours, permissions, simulated sources), see
 [docs/metronomon.md](https://github.com/tanyorg/gnomon/blob/main/docs/metronomon.md).
 
+## Tested with
+
+| Device | Connection | Host | Tool | Notes |
+|---|---|---|---|---|
+| u-blox 7 | USB CDC-ACM (`/dev/cu.usbmodem*`) | macOS 15 | gnomon | |
+| GT-502MGG-N | gpsd 3.22 (protocol 3.14), receiver on UART (`/dev/ttyAMA0`) at 115200 | Raspberry Pi 3, Debian 11 (aarch64) | gnomon | run on the same host as gpsd (`localhost:2947`) |
+| GT-502MGG-N PPS | pps-gpio on GPIO12 (`/dev/pps0`, also via the `/dev/gpspps0` symlink) | Raspberry Pi 3, Debian 11 (aarch64) | metronomon | runs alongside chronyd 4.0 using the same device as a PPS refclock |
+| TF-NTP-LITE PPS output | DCD of the PC's built-in UART (`/dev/pps0`) | x86_64 PC (Celeron N2840), Ubuntu 24.04 | metronomon | runs alongside chronyd using the same device; `/dev/pps0` is root-only here, so run with sudo |
+| FC-NTP-MINI (NMEA output) | raw NMEA over TCP (port 4001) | OpenBSD 7.9 (amd64, VM) | gnomon | |
+| SEIKO TS-2560 (NMEA output) | serial via USB-serial adapter, 115200 8N1 | macOS 15 | gnomon | GSA carries 16 PRN slots plus the NMEA 4.10 system ID |
+
+Reports for other receivers, NTP appliances and operating systems are
+welcome: open an issue with the device model, how it is connected, the host
+OS, and if possible a short raw NMEA capture.
+
 ## Acknowledgements
 
 gnomon would not exist without [gpsd](https://gpsd.io/). For three decades
