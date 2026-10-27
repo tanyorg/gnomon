@@ -30,7 +30,8 @@ The title `Satellites 16/30` reads *used / in view*.
 | ?? | Could not be determined |
 
 SBAS (NMEA 33-64, 120-158) and QZSS (193-202) reported under the GPS talker
-are shown as their own systems.
+are shown as their own systems. Some receivers (e.g. SEIKO TS-2560) send QZSS
+under the GPS talker as PRN - 100, i.e. 93-99; these are shown as QZSS too.
 
 ### Colours
 

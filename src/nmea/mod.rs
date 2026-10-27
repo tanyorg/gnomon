@@ -280,7 +280,7 @@ mod tests {
             (Sys::Gps, 27),
             (Sys::Gps, 28),
             (Sys::Gps, 31),
-            (Sys::Gps, 95),
+            (Sys::Qzss, 95), // QZSS as PRN - 100 under system ID 1
             (Sys::Glonass, 71),
             (Sys::Glonass, 84),
             (Sys::Galileo, 6),

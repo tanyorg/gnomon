@@ -168,8 +168,8 @@ gnomon /dev/cu.usbserial-110     # macOS
   With NMEA 4.10+, C/N0 per GSV signal ID is shown separated by `/`.
   The system is taken from the GSA system ID (field 18) when present, otherwise
   from the talker, and from the PRN range for the GN talker. SBAS (33-64,
-  120-158) and QZSS (193-202) reported under the GPS talker are shown as their
-  own systems.
+  120-158) and QZSS (193-202, or 93-99 as sent by some receivers) reported
+  under the GPS talker are shown as their own systems.
 - **Fix**: merged from RMC/GGA/GNS/GLL/ZDA/VTG/GSA/GST/TXT, plus **Lag**:
   the time the first time-bearing sentence of each epoch reached the host,
   minus the UTC time in that sentence. It is the sum of the receiver's output

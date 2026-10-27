@@ -66,11 +66,15 @@ impl Sys {
     }
 
     /// Resolve a PRN reported under `hint`, catching SBAS/QZSS carried under GPS.
+    ///
+    /// QZSS appears under the GPS talker either as its own PRN (193-202) or
+    /// as PRN - 100 (93-99, e.g. SEIKO TS-2560). GLONASS 65-96 is never sent
+    /// under the GPS talker, so 93-99 is unambiguous there.
     pub(crate) fn refine(hint: Sys, prn: u16) -> Sys {
         match hint {
             Sys::Gps => match prn {
                 33..=64 | 120..=158 => Sys::Sbas,
-                193..=202 => Sys::Qzss,
+                93..=99 | 193..=202 => Sys::Qzss,
                 _ => Sys::Gps,
             },
             Sys::Unknown => Sys::from_prn(prn),
@@ -257,5 +261,17 @@ mod tests {
         let lon = coord(Some("13024.1030"), Some("W")).unwrap();
         assert!((lon + 130.401717).abs() < 1e-5);
         assert!(coord(Some("3365.0"), Some("N")).is_none());
+    }
+
+    #[test]
+    fn qzss_under_gps_talker() {
+        for prn in [93, 94, 95, 96, 99, 193, 199] {
+            assert_eq!(Sys::refine(Sys::Gps, prn), Sys::Qzss, "{prn}");
+        }
+        assert_eq!(Sys::refine(Sys::Gps, 32), Sys::Gps);
+        assert_eq!(Sys::refine(Sys::Gps, 50), Sys::Sbas);
+        // without a GPS hint, 65-96 stays GLONASS
+        assert_eq!(Sys::refine(Sys::Unknown, 94), Sys::Glonass);
+        assert_eq!(Sys::refine(Sys::Glonass, 94), Sys::Glonass);
     }
 }
