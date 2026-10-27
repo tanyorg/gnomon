@@ -160,6 +160,43 @@ pub(crate) fn s<'a>(fields: &[&'a str], i: usize) -> Option<&'a str> {
     fields.get(i).copied().filter(|s| !s.is_empty())
 }
 
+/// Field positions within a GSA sentence (fields after the address).
+///
+/// The standard layout has 12 PRN slots: mode, fix type, PRN x12, PDOP,
+/// HDOP, VDOP and, from NMEA 4.10, a system ID. Some receivers emit more
+/// slots (the SEIKO TS-2560 sends 16), so everything after the PRNs is
+/// located from the end of the sentence rather than at fixed indices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GsaLayout {
+    pub prns: std::ops::Range<usize>,
+    /// Index of PDOP; HDOP and VDOP follow.
+    pub dop: usize,
+    pub sysid: Option<u8>,
+}
+
+pub(crate) fn gsa_layout(fl: &[&str]) -> Option<GsaLayout> {
+    let n = fl.len();
+    if n < 5 {
+        return None;
+    }
+    // NMEA 4.10+: a trailing small integer (no decimal point) after the DOPs.
+    let last = fl[n - 1];
+    let sysid = (!last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| last.parse::<u8>().ok())
+        .flatten()
+        .filter(|&v| (1..=15).contains(&v));
+    let tail = if sysid.is_some() { 4 } else { 3 };
+    if n < 2 + tail {
+        return None;
+    }
+    let dop = n - tail;
+    Some(GsaLayout {
+        prns: 2..dop,
+        dop,
+        sysid,
+    })
+}
+
 /// ddmm.mmmm + hemisphere -> signed decimal degrees.
 pub fn coord(v: Option<&str>, hemi: Option<&str>) -> Option<f64> {
     let v = v?;

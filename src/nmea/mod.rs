@@ -221,9 +221,11 @@ impl Nmea {
 
     fn gsa(&mut self, talker: &str, fl: &[&str], now: Instant) {
         self.fix.nav_mode = u(fl, 1);
-        self.fix.pdop = f(fl, 14);
-        self.fix.hdop = f(fl, 15).or(self.fix.hdop);
-        self.fix.vdop = f(fl, 16);
+        if let Some(lay) = sentence::gsa_layout(fl) {
+            self.fix.pdop = f(fl, lay.dop);
+            self.fix.hdop = f(fl, lay.dop + 1).or(self.fix.hdop);
+            self.fix.vdop = f(fl, lay.dop + 2);
+        }
         self.sats.gsa(talker, fl, now);
     }
 
@@ -246,6 +248,59 @@ mod tests {
     fn ck(body: &str) -> String {
         let c = body.bytes().fold(0u8, |a, b| a ^ b);
         format!("${body}*{c:02X}")
+    }
+
+    /// SEIKO TS-2560: GN-talker GSA with 16 PRN slots and a trailing system
+    /// ID. Galileo 06/09 must not be taken for GPS, and the GPS set must not
+    /// be overwritten by the Galileo one.
+    #[test]
+    fn gsa_sixteen_slots_ts2560() {
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        let host = 7.0 * 3600.0 + 28.0 * 60.0 + 26.0;
+        let lines = [
+            "$GNGNS,072845.000,3334.8306,N,13015.6643,E,AAA,09,1.0,17.7,27.0,,,V*68",
+            "$GNGSA,A,3,09,27,28,31,95,,,,,,,,,,,,1.8,1.0,1.5,1*35",
+            "$GNGSA,A,3,71,84,,,,,,,,,,,,,,,1.8,1.0,1.5,2*34",
+            "$GNGSA,A,3,06,09,,,,,,,,,,,,,,,1.8,1.0,1.5,3*30",
+        ];
+        for l in &lines {
+            assert_eq!(n.feed(l, t0, host), Feed::Good, "{l}");
+        }
+        let mut used: Vec<_> = n.used_set(t0).into_iter().collect();
+        used.sort();
+        let mut want = vec![
+            (Sys::Gps, 9),
+            (Sys::Gps, 27),
+            (Sys::Gps, 28),
+            (Sys::Gps, 31),
+            (Sys::Gps, 95),
+            (Sys::Glonass, 71),
+            (Sys::Glonass, 84),
+            (Sys::Galileo, 6),
+            (Sys::Galileo, 9),
+        ];
+        want.sort();
+        assert_eq!(used, want);
+        assert_eq!(n.fix.pdop, Some(1.8));
+        assert_eq!(n.fix.hdop, Some(1.0));
+        assert_eq!(n.fix.vdop, Some(1.5));
+    }
+
+    #[test]
+    fn gsa_layout_variants() {
+        use super::sentence::gsa_layout;
+        let f = |s: &'static str| s.split(',').collect::<Vec<_>>();
+        // NMEA 2.x/3.x: 12 slots, no system ID.
+        let l = gsa_layout(&f("A,3,05,13,15,,,,,,,,,,1.10,0.62,0.91")).unwrap();
+        assert_eq!((l.prns, l.dop, l.sysid), (2..14, 14, None));
+        // NMEA 4.10: 12 slots + system ID.
+        let l = gsa_layout(&f("A,3,05,13,15,,,,,,,,,,1.10,0.62,0.91,1")).unwrap();
+        assert_eq!((l.prns, l.dop, l.sysid), (2..14, 14, Some(1)));
+        // Legacy sentence with an empty VDOP is not mistaken for 4.10.
+        let l = gsa_layout(&f("A,3,05,,,,,,,,,,,,1.10,0.62,")).unwrap();
+        assert_eq!(l.sysid, None);
+        assert!(gsa_layout(&f("A,3")).is_none());
     }
 
     #[test]

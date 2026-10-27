@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use super::sentence::{f, u, Sys};
+use super::sentence::{f, gsa_layout, u, Sys};
 
 /// Satellite data older than this is dropped from the display.
 pub const SAT_STALE: Duration = Duration::from_secs(10);
@@ -52,12 +52,14 @@ pub struct SatTracker {
 impl SatTracker {
     /// Record the PRNs a GSA sentence lists as used in the fix.
     pub(super) fn gsa(&mut self, talker: &str, fl: &[&str], now: Instant) {
-        let sysid = u(fl, 17).and_then(|v| u8::try_from(v).ok());
+        let Some(lay) = gsa_layout(fl) else { return };
+        let sysid = lay.sysid;
         let hint = sysid
             .and_then(Sys::from_system_id)
             .or_else(|| Sys::from_talker(talker))
             .unwrap_or(Sys::Unknown);
-        let prns: Vec<u16> = (2..14)
+        let prns: Vec<u16> = lay
+            .prns
             .filter_map(|i| u(fl, i))
             .filter_map(|p| u16::try_from(p).ok())
             .collect();
