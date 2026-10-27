@@ -1,9 +1,11 @@
 //! Tiny terminal layer: raw mode via stty(1), size via TIOCGWINSZ, and a
 //! cell canvas rendered with line-level diffing using ANSI/VT100 sequences.
 
-use std::io::{self, Write};
+use std::fmt::Write as _;
+use std::io::{self, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{mpsc, OnceLock};
+use std::time::{Duration, Instant};
 
 static SAVED_STTY: OnceLock<String> = OnceLock::new();
 
@@ -77,7 +79,7 @@ const TIOCGWINSZ: std::ffi::c_ulong = 0x4008_7468; // macOS and the BSDs
 pub fn size() -> (usize, usize) {
     let mut ws = Winsize::default();
     // SAFETY: TIOCGWINSZ writes a struct winsize into the pointer we pass.
-    let r = unsafe { ioctl(1, TIOCGWINSZ, &mut ws as *mut Winsize) };
+    let r = unsafe { ioctl(1, TIOCGWINSZ, std::ptr::addr_of_mut!(ws)) };
     if r == 0 && ws.col > 0 && ws.row > 0 {
         return (ws.col as usize, ws.row as usize);
     }
@@ -263,7 +265,7 @@ impl Screen {
         for y in 0..c.h {
             let l = c.line_sgr(y);
             if self.prev[y] != l {
-                out.push_str(&format!("\x1b[{};1H", y + 1));
+                let _ = write!(out, "\x1b[{};1H", y + 1);
                 out.push_str(&l);
                 self.prev[y] = l;
             }
@@ -274,5 +276,108 @@ impl Screen {
             o.flush()?;
         }
         Ok(())
+    }
+}
+
+// ------------------------------------------------------------ sessions ---
+
+/// Feed events to `handle` until `d` has passed (used by `--snapshot`).
+pub fn drain_for<E>(rx: &mpsc::Receiver<E>, d: Duration, mut handle: impl FnMut(E)) {
+    let end = Instant::now() + d;
+    while let Some(left) = end.checked_duration_since(Instant::now()) {
+        if let Ok(ev) = rx.recv_timeout(left) {
+            handle(ev);
+        }
+    }
+}
+
+/// The full-screen UI needs a terminal on both stdin (keys) and stdout.
+pub fn require_tty() -> Result<(), String> {
+    if io::stdout().is_terminal() && io::stdin().is_terminal() {
+        Ok(())
+    } else {
+        Err("stdin/stdout must be a terminal (use --snapshot for non-interactive use)".into())
+    }
+}
+
+/// Run a full-screen session: raw mode and the alternate screen, a keyboard
+/// reader thread that sends `key(byte)` into the event channel, and a loop
+/// that feeds events to `handle` (return `false` to quit) and redraws with
+/// `draw(width, height)` at most once per `frame`. The terminal is restored
+/// on return and on panic.
+pub fn run_tui<E: Send + 'static>(
+    tx: &mpsc::Sender<E>,
+    rx: &mpsc::Receiver<E>,
+    frame: Duration,
+    key: fn(u8) -> E,
+    handle: impl FnMut(E) -> bool,
+    draw: impl FnMut(usize, usize) -> Canvas,
+) -> Result<(), String> {
+    require_tty()?;
+    enter().map_err(|e| e.to_string())?;
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        leave();
+        hook(info);
+    }));
+    spawn_keys(tx.clone(), key);
+    let r = event_loop(rx, frame, handle, draw);
+    leave();
+    r
+}
+
+/// Keyboard reader. `stty raw` makes read() return per keystroke.
+fn spawn_keys<E: Send + 'static>(tx: mpsc::Sender<E>, key: fn(u8) -> E) {
+    std::thread::spawn(move || {
+        let mut b = [0u8; 16];
+        let mut stdin = io::stdin();
+        loop {
+            match stdin.read(&mut b) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    for &k in &b[..n] {
+                        if tx.send(key(k)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn event_loop<E>(
+    rx: &mpsc::Receiver<E>,
+    frame: Duration,
+    mut handle: impl FnMut(E) -> bool,
+    mut draw: impl FnMut(usize, usize) -> Canvas,
+) -> Result<(), String> {
+    const MIN_WAIT: Duration = Duration::from_millis(10);
+    let mut screen = Screen::default();
+    let mut last_draw: Option<Instant> = None;
+    loop {
+        let wait = last_draw.map_or(MIN_WAIT, |t| {
+            frame.saturating_sub(t.elapsed()).max(MIN_WAIT)
+        });
+        match rx.recv_timeout(wait) {
+            Ok(ev) => {
+                if !handle(ev) {
+                    return Ok(());
+                }
+                // Drain whatever else is queued before drawing.
+                while let Ok(ev) = rx.try_recv() {
+                    if !handle(ev) {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+        if last_draw.map_or(true, |t| t.elapsed() >= frame) {
+            let (w, h) = size();
+            screen.draw(&draw(w, h)).map_err(|e| e.to_string())?;
+            last_draw = Some(Instant::now());
+        }
     }
 }

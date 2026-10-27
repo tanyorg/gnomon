@@ -2,14 +2,24 @@
 //!
 //! Handles NMEA 2.x through 4.11 style output (multi-constellation talkers,
 //! GSA system ID, GSV signal ID).
+//!
+//! - [`sentence`]: framing, checksum and field parsing of one sentence
+//! - [`sats`]: satellites in view and in use
+//! - [`stats`]: per-sentence counts and output intervals
+//! - this module: the fix and the epoch / lag bookkeeping
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::{Duration, Instant};
+mod sats;
+mod sentence;
+mod stats;
 
-/// Satellite data older than this is dropped from the display.
-pub const SAT_STALE: Duration = Duration::from_secs(10);
-/// "Used in fix" sets older than this are ignored.
-pub const USED_STALE: Duration = Duration::from_secs(5);
+use std::collections::{BTreeMap, HashSet};
+use std::time::Instant;
+
+pub use sats::{SatTracker, SatView, SAT_STALE, USED_STALE};
+pub use sentence::{coord, split, tod, CkStatus, Sentence, Sys};
+pub use stats::SentenceStat;
+
+use sentence::{f, s, u};
 
 // Resource limits. Input comes from untrusted peers (or line noise at a wrong
 // baud rate), so every table keyed by received data is bounded.
@@ -19,206 +29,6 @@ pub const MAX_STAT_KEYS: usize = 128;
 pub const OTHER: &str = "~other";
 /// Longest address kept as a statistics key (real ones are 5-6 chars).
 const MAX_ADDR_LEN: usize = 16;
-/// GSV cycles in flight / completed, keyed by (talker, signal ID).
-const MAX_GSV_KEYS: usize = 64;
-/// NMEA allows 1..9 GSV messages per cycle; be lenient but bounded.
-const MAX_GSV_MSGS: u32 = 32;
-/// Satellites accepted in one GSV cycle.
-const MAX_GSV_SATS: usize = 256;
-/// "Used in fix" groups (one per GSA talker / system ID).
-const MAX_USED_KEYS: usize = 64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Sys {
-    Gps,
-    Sbas,
-    Glonass,
-    Galileo,
-    Beidou,
-    Qzss,
-    Navic,
-    Unknown,
-}
-
-impl Sys {
-    pub fn label(self) -> &'static str {
-        match self {
-            Sys::Gps => "GP",
-            Sys::Sbas => "SB",
-            Sys::Glonass => "GL",
-            Sys::Galileo => "GA",
-            Sys::Beidou => "BD",
-            Sys::Qzss => "QZ",
-            Sys::Navic => "IR",
-            Sys::Unknown => "??",
-        }
-    }
-
-    fn from_talker(t: &str) -> Option<Sys> {
-        Some(match t {
-            "GP" => Sys::Gps,
-            "GL" => Sys::Glonass,
-            "GA" => Sys::Galileo,
-            "GB" | "BD" => Sys::Beidou,
-            "GQ" | "QZ" => Sys::Qzss,
-            "GI" | "IN" => Sys::Navic,
-            _ => return None,
-        })
-    }
-
-    /// NMEA 4.10+ system ID (GSA field 18, GSV signal context).
-    fn from_system_id(id: u8) -> Option<Sys> {
-        Some(match id {
-            1 => Sys::Gps,
-            2 => Sys::Glonass,
-            3 => Sys::Galileo,
-            4 => Sys::Beidou,
-            5 => Sys::Qzss,
-            6 => Sys::Navic,
-            _ => return None,
-        })
-    }
-
-    /// Classic NMEA PRN numbering when no better hint exists.
-    fn from_prn(prn: u16) -> Sys {
-        match prn {
-            1..=32 => Sys::Gps,
-            33..=64 | 120..=158 => Sys::Sbas,
-            65..=96 => Sys::Glonass,
-            193..=202 => Sys::Qzss,
-            203..=264 => Sys::Beidou, // some receivers offset BeiDou PRNs into 201+
-            301..=336 => Sys::Galileo,
-            _ => Sys::Unknown,
-        }
-    }
-
-    /// Resolve a PRN reported under `hint`, catching SBAS/QZSS carried under GPS.
-    fn refine(hint: Sys, prn: u16) -> Sys {
-        match hint {
-            Sys::Gps => match prn {
-                33..=64 | 120..=158 => Sys::Sbas,
-                193..=202 => Sys::Qzss,
-                _ => Sys::Gps,
-            },
-            Sys::Unknown => Sys::from_prn(prn),
-            s => s,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CkStatus {
-    Ok,
-    Missing,
-    Bad { got: u8, want: u8 },
-}
-
-#[derive(Debug, Clone)]
-pub struct Sentence<'a> {
-    /// Address field without the leading '$'/'!', e.g. "GNRMC", "PUBX".
-    pub addr: &'a str,
-    /// Two-letter talker for standard sentences, None for proprietary.
-    pub talker: Option<&'a str>,
-    /// Formatter ("RMC", "GSV", ...); for proprietary sentences the full address.
-    pub kind: &'a str,
-    pub fields: Vec<&'a str>,
-    pub ck: CkStatus,
-}
-
-/// Split and checksum-verify one sentence. Returns None if it is not NMEA-shaped.
-pub fn split(line: &str) -> Option<Sentence<'_>> {
-    let line = line.trim_end_matches(['\r', '\n']);
-    let first = line.as_bytes().first()?;
-    // NMEA 0183 is printable ASCII by definition. Rejecting anything else
-    // also keeps every byte-index slice below on a char boundary.
-    if (*first != b'$' && *first != b'!') || !line.is_ascii() {
-        return None;
-    }
-    let body_end = line.rfind('*');
-    let (body, ck) = match body_end {
-        Some(p) if line.len() >= p + 3 => {
-            let body = &line[1..p];
-            let want = body.bytes().fold(0u8, |a, b| a ^ b);
-            match u8::from_str_radix(&line[p + 1..p + 3], 16) {
-                Ok(got) if got == want => (body, CkStatus::Ok),
-                Ok(got) => (body, CkStatus::Bad { got, want }),
-                Err(_) => (body, CkStatus::Bad { got: 0, want }),
-            }
-        }
-        Some(p) => (&line[1..p], CkStatus::Missing),
-        None => (&line[1..], CkStatus::Missing),
-    };
-    let mut it = body.split(',');
-    let addr = it.next()?;
-    if addr.is_empty() || !addr.bytes().all(|c| c.is_ascii_alphanumeric()) {
-        return None;
-    }
-    let fields: Vec<&str> = it.collect();
-    let (talker, kind) = if addr.starts_with('P') || addr.len() < 5 {
-        (None, addr)
-    } else {
-        (Some(&addr[..2]), &addr[2..])
-    };
-    Some(Sentence {
-        addr,
-        talker,
-        kind,
-        fields,
-        ck,
-    })
-}
-
-fn f(fields: &[&str], i: usize) -> Option<f64> {
-    fields
-        .get(i)
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse().ok())
-}
-fn u(fields: &[&str], i: usize) -> Option<u32> {
-    fields
-        .get(i)
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse().ok())
-}
-fn s<'a>(fields: &[&'a str], i: usize) -> Option<&'a str> {
-    fields.get(i).copied().filter(|s| !s.is_empty())
-}
-
-/// ddmm.mmmm + hemisphere -> signed decimal degrees.
-pub fn coord(v: Option<&str>, hemi: Option<&str>) -> Option<f64> {
-    let v = v?;
-    let dot = v.find('.').unwrap_or(v.len());
-    if dot < 3 {
-        return None;
-    }
-    let deg: f64 = v[..dot - 2].parse().ok()?;
-    let min: f64 = v[dot - 2..].parse().ok()?;
-    if min >= 60.0 {
-        return None;
-    }
-    let mut d = deg + min / 60.0;
-    match hemi? {
-        "S" | "W" => d = -d,
-        "N" | "E" => {}
-        _ => return None,
-    }
-    Some(d)
-}
-
-/// hhmmss[.sss] -> seconds of day.
-pub fn tod(v: Option<&str>) -> Option<f64> {
-    let v = v?;
-    if v.len() < 6 {
-        return None;
-    }
-    let h: f64 = v[0..2].parse().ok()?;
-    let m: f64 = v[2..4].parse().ok()?;
-    let sec: f64 = v[4..].parse().ok()?;
-    if h > 23.0 || m > 59.0 || sec >= 61.0 {
-        return None;
-    }
-    Some(h * 3600.0 + m * 60.0 + sec)
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct Fix {
@@ -247,84 +57,6 @@ pub struct Fix {
     pub last_txt: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct SatView {
-    pub sys: Sys,
-    pub prn: u16,
-    pub el: Option<i32>,
-    pub az: Option<i32>,
-    /// C/N0 per signal ID (0 = not given / single signal).
-    pub snr: BTreeMap<u8, Option<u32>>,
-    pub used: bool,
-}
-
-#[derive(Debug, Clone)]
-struct GsvSat {
-    sys: Sys,
-    prn: u16,
-    el: Option<i32>,
-    az: Option<i32>,
-    snr: Option<u32>,
-}
-
-#[derive(Debug, Default)]
-pub struct SentenceStat {
-    pub count: u64,
-    pub bad: u64,
-    pub last: Option<Instant>,
-    /// Smoothed interval between epochs in which this sentence appeared (s).
-    pub period: Option<f64>,
-    burst_epoch: u64,
-    burst_start: Option<Instant>,
-    outliers: u32,
-}
-
-impl SentenceStat {
-    /// How long without this sentence before it is considered missing.
-    pub fn stale_after(&self) -> Duration {
-        let p = self.period.unwrap_or(1.0);
-        Duration::from_secs_f64((p * 3.0).max(3.0))
-    }
-
-    fn mark(&mut self, now: Instant, epoch_seq: u64) {
-        self.count += 1;
-        // A new "burst" is the first arrival in a new NMEA epoch. Without any
-        // time-bearing sentences fall back to a plain inter-arrival gap.
-        let new_burst = if epoch_seq > 0 {
-            self.burst_epoch != epoch_seq
-        } else {
-            self.last
-                .map_or(true, |l| now.duration_since(l) > Duration::from_millis(300))
-        };
-        if new_burst {
-            if let Some(bs) = self.burst_start {
-                let iv = now.duration_since(bs).as_secs_f64();
-                if iv > 0.0 && iv < 60.0 {
-                    self.period = Some(match self.period {
-                        None => iv,
-                        // Missed epochs: ignore, unless the rate really changed.
-                        Some(p) if iv > p * 1.8 && self.outliers < 3 => {
-                            self.outliers += 1;
-                            p
-                        }
-                        Some(p) if iv > p * 1.8 => {
-                            self.outliers = 0;
-                            iv
-                        }
-                        Some(p) => {
-                            self.outliers = 0;
-                            p + 0.2 * (iv - p)
-                        }
-                    });
-                }
-            }
-            self.burst_start = Some(now);
-            self.burst_epoch = epoch_seq;
-        }
-        self.last = Some(now);
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct Nmea {
     pub fix: Fix,
@@ -336,9 +68,7 @@ pub struct Nmea {
     pub lag: Option<f64>,
     last_epoch_tod: Option<f64>,
     epoch_seq: u64,
-    gsv_stage: HashMap<(String, u8), (u32, Vec<GsvSat>)>,
-    gsv_done: HashMap<(String, u8), (Instant, Vec<GsvSat>)>,
-    used: HashMap<String, (Instant, HashSet<(Sys, u16)>)>,
+    sats: SatTracker,
 }
 
 /// What the caller should do with a line after feeding it.
@@ -479,7 +209,7 @@ impl Nmea {
                 self.fix.gst_alt = f(fl, 7);
             }
             "GSA" => self.gsa(talker, fl, now),
-            "GSV" => self.gsv(talker, fl, now),
+            "GSV" => self.sats.gsv(talker, fl, now),
             "TXT" => {
                 if let Some(t) = s(fl, 3) {
                     self.fix.last_txt = Some(t.to_string());
@@ -494,194 +224,28 @@ impl Nmea {
         self.fix.pdop = f(fl, 14);
         self.fix.hdop = f(fl, 15).or(self.fix.hdop);
         self.fix.vdop = f(fl, 16);
-        let sysid = u(fl, 17).and_then(|v| u8::try_from(v).ok());
-        let hint = sysid
-            .and_then(Sys::from_system_id)
-            .or_else(|| Sys::from_talker(talker))
-            .unwrap_or(Sys::Unknown);
-        let prns: Vec<u16> = (2..14)
-            .filter_map(|i| u(fl, i))
-            .filter_map(|p| u16::try_from(p).ok())
-            .collect();
-        let set: HashSet<(Sys, u16)> = prns.iter().map(|&p| (Sys::refine(hint, p), p)).collect();
-        let group = match (sysid, talker) {
-            (Some(id), _) => format!("id{id}"),
-            (None, "GN") => match prns.first() {
-                Some(&p) => Sys::from_prn(p).label().to_string(),
-                None => return, // empty GN GSA without system id: nothing attributable
-            },
-            (None, t) => t.to_string(),
-        };
-        if !self.used.contains_key(&group) && self.used.len() >= MAX_USED_KEYS {
-            self.used
-                .retain(|_, (t, _)| now.duration_since(*t) < USED_STALE);
-            if self.used.len() >= MAX_USED_KEYS {
-                return;
-            }
-        }
-        self.used.insert(group, (now, set));
-    }
-
-    fn gsv(&mut self, talker: &str, fl: &[&str], now: Instant) {
-        let (Some(total), Some(num)) = (u(fl, 0), u(fl, 1)) else {
-            return;
-        };
-        if total == 0 || total > MAX_GSV_MSGS || num == 0 || num > total {
-            return;
-        }
-        // After the 3 header fields come 4-field blocks, optionally followed
-        // by a signal ID (NMEA 4.10+).
-        let body = fl.len().saturating_sub(3);
-        let signal = if body % 4 == 1 {
-            u(fl, fl.len() - 1)
-                .and_then(|v| u8::try_from(v).ok())
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        let hint = Sys::from_talker(talker).unwrap_or(Sys::Unknown);
-        let key = (talker.to_string(), signal);
-        if num == 1 {
-            if !self.gsv_stage.contains_key(&key) && self.gsv_stage.len() >= MAX_GSV_KEYS {
-                // Too many parallel cycles: only real talkers survive this
-                // long, so dropping the oldest partial state is fine.
-                self.gsv_stage.clear();
-            }
-            self.gsv_stage.insert(key.clone(), (1, Vec::new()));
-        }
-        let Some(stage) = self.gsv_stage.get_mut(&key) else {
-            return;
-        };
-        if num != stage.0 && num != 1 {
-            // Out of sequence: discard the partial cycle.
-            self.gsv_stage.remove(&key);
-            return;
-        }
-        let blocks = body / 4;
-        for b in 0..blocks {
-            let i = 3 + b * 4;
-            let Some(prn) = u(fl, i).and_then(|p| u16::try_from(p).ok()) else {
-                continue;
-            };
-            if prn == 0 {
-                continue;
-            }
-            if stage.1.len() >= MAX_GSV_SATS {
-                self.gsv_stage.remove(&key);
-                return;
-            }
-            stage.1.push(GsvSat {
-                sys: Sys::refine(hint, prn),
-                prn,
-                el: f(fl, i + 1).map(|v| v as i32),
-                az: f(fl, i + 2).map(|v| v as i32),
-                snr: u(fl, i + 3),
-            });
-        }
-        if num >= total {
-            let (_, sats) = self.gsv_stage.remove(&key).unwrap();
-            if !self.gsv_done.contains_key(&key) && self.gsv_done.len() >= MAX_GSV_KEYS {
-                self.gsv_done
-                    .retain(|_, (t, _)| now.duration_since(*t) < SAT_STALE);
-                if self.gsv_done.len() >= MAX_GSV_KEYS {
-                    return;
-                }
-            }
-            self.gsv_done.insert(key, (now, sats));
-        } else {
-            // num < total <= MAX_GSV_MSGS, so this cannot overflow; keep the
-            // check anyway in case the limits ever change.
-            match num.checked_add(1) {
-                Some(n) => stage.0 = n,
-                None => {
-                    self.gsv_stage.remove(&key);
-                }
-            }
-        }
+        self.sats.gsa(talker, fl, now);
     }
 
     pub fn used_set(&self, now: Instant) -> HashSet<(Sys, u16)> {
-        self.used
-            .values()
-            .filter(|(t, _)| now.duration_since(*t) < USED_STALE)
-            .flat_map(|(_, s)| s.iter().copied())
-            .collect()
+        self.sats.used_set(now)
     }
 
     /// Merged satellite view across talkers and signals, sorted for display.
     pub fn satellites(&self, now: Instant) -> Vec<SatView> {
-        let used = self.used_set(now);
-        let mut map: BTreeMap<(Sys, u16), SatView> = BTreeMap::new();
-        for ((_, sig), (t, sats)) in &self.gsv_done {
-            if now.duration_since(*t) >= SAT_STALE {
-                continue;
-            }
-            for g in sats {
-                let e = map.entry((g.sys, g.prn)).or_insert_with(|| SatView {
-                    sys: g.sys,
-                    prn: g.prn,
-                    el: None,
-                    az: None,
-                    snr: BTreeMap::new(),
-                    used: false,
-                });
-                e.el = e.el.or(g.el);
-                e.az = e.az.or(g.az);
-                e.snr.insert(*sig, g.snr);
-            }
-        }
-        // A used satellite might not have been in view list (or vice versa).
-        for &(sys, prn) in &used {
-            map.entry((sys, prn)).or_insert_with(|| SatView {
-                sys,
-                prn,
-                el: None,
-                az: None,
-                snr: BTreeMap::new(),
-                used: true,
-            });
-        }
-        let mut v: Vec<SatView> = map
-            .into_values()
-            .map(|mut s| {
-                s.used = used.contains(&(s.sys, s.prn));
-                s
-            })
-            .collect();
-        v.sort_by_key(|s| (!s.used, s.sys, s.prn));
-        v
+        self.sats.satellites(now)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::sats::{MAX_GSV_KEYS, MAX_GSV_SATS, MAX_USED_KEYS};
     use super::*;
+    use std::time::Duration;
 
     fn ck(body: &str) -> String {
         let c = body.bytes().fold(0u8, |a, b| a ^ b);
         format!("${body}*{c:02X}")
-    }
-
-    #[test]
-    fn checksum_and_split() {
-        let s = split("$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47").unwrap();
-        assert_eq!(s.ck, CkStatus::Ok);
-        assert_eq!(s.talker, Some("GP"));
-        assert_eq!(s.kind, "GGA");
-        let s = split("$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*48").unwrap();
-        assert!(matches!(s.ck, CkStatus::Bad { .. }));
-        let s = split("$PUBX,00,foo").unwrap();
-        assert_eq!((s.talker, s.kind, s.ck), (None, "PUBX", CkStatus::Missing));
-        assert!(split("{\"class\":\"TPV\"}").is_none());
-    }
-
-    #[test]
-    fn coords() {
-        let lat = coord(Some("3335.4073"), Some("N")).unwrap();
-        assert!((lat - 33.590122).abs() < 1e-5);
-        let lon = coord(Some("13024.1030"), Some("W")).unwrap();
-        assert!((lon + 130.401717).abs() < 1e-5);
-        assert!(coord(Some("3365.0"), Some("N")).is_none());
     }
 
     #[test]
@@ -815,9 +379,9 @@ mod tests {
                 0.0,
             );
         }
-        assert!(n.gsv_done.len() <= MAX_GSV_KEYS);
-        assert!(n.gsv_stage.len() <= MAX_GSV_KEYS);
-        assert!(n.used.len() <= MAX_USED_KEYS);
+        assert!(n.sats.gsv_done.len() <= MAX_GSV_KEYS);
+        assert!(n.sats.gsv_stage.len() <= MAX_GSV_KEYS);
+        assert!(n.sats.used.len() <= MAX_USED_KEYS);
     }
 
     #[test]
@@ -829,14 +393,18 @@ mod tests {
         n.feed(&ck("GPGSV,4294967295,1,01,05,45,120,40"), t0, 0.0);
         n.feed(&ck("GPGSV,0,0,01,05,45,120,40"), t0, 0.0);
         n.feed(&ck("GPGSV,2,3,01,05,45,120,40"), t0, 0.0);
-        assert!(n.gsv_stage.is_empty() && n.gsv_done.is_empty());
+        assert!(n.sats.gsv_stage.is_empty() && n.sats.gsv_done.is_empty());
         // A never-ending cycle of max-length messages stays bounded.
         n.feed(&ck("GPGSV,32,1,99,01,1,1,1"), t0, 0.0);
         let blk: String = (1..=2000).map(|p| format!(",{p},10,10,30")).collect();
         for m in 2..=31 {
             n.feed(&ck(&format!("GPGSV,32,{m},99{blk}")), t0, 0.0);
         }
-        assert!(n.gsv_stage.values().all(|(_, v)| v.len() <= MAX_GSV_SATS));
+        assert!(n
+            .sats
+            .gsv_stage
+            .values()
+            .all(|(_, v)| v.len() <= MAX_GSV_SATS));
         // Still works normally afterwards.
         n.feed(&ck("GPGSV,1,1,01,05,45,120,40"), t0, 0.0);
         assert_eq!(n.satellites(t0).len(), 1);

@@ -47,7 +47,7 @@ fn posmode_name(m: &str) -> &'static str {
 }
 
 fn opt<T: std::fmt::Display>(v: Option<T>) -> String {
-    v.map(|x| x.to_string()).unwrap_or_else(|| "-".into())
+    v.map_or_else(|| "-".into(), |x| x.to_string())
 }
 
 fn fmt_offset(o: &Offset, unit_ns: f64, unit: &str, dec: usize) -> String {
@@ -180,9 +180,7 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
     push(
         format!(
             "Time {}",
-            f.tod
-                .map(|t| format!("{}Z", fmt_tod(t, 3)))
-                .unwrap_or("-".into())
+            f.tod.map_or("-".into(), |t| format!("{}Z", fmt_tod(t, 3)))
         ),
         st::BOLD,
     );
@@ -190,13 +188,12 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
         format!(
             "Date {}",
             f.date
-                .map(|(y, m, d)| format!("{y:04}-{m:02}-{d:02}"))
-                .unwrap_or("-".into())
+                .map_or("-".into(), |(y, m, d)| format!("{y:04}-{m:02}-{d:02}"))
         ),
         0,
     );
     let ll = |v: Option<f64>, p: char, n: char, wdt: usize| {
-        v.map(|v| {
+        v.map_or("-".into(), |v| {
             format!(
                 "{:>wdt$.7} {}",
                 v.abs(),
@@ -204,15 +201,14 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
                 wdt = wdt
             )
         })
-        .unwrap_or("-".into())
     };
     push(format!("Lat  {}", ll(f.lat, 'N', 'S', 12)), 0);
     push(format!("Lon  {}", ll(f.lon, 'E', 'W', 12)), 0);
     push(
         format!(
             "Alt  {} m  Sep {}",
-            f.alt.map(|a| format!("{a:.1}")).unwrap_or("-".into()),
-            f.sep.map(|a| format!("{a:.1}")).unwrap_or("-".into())
+            f.alt.map_or("-".into(), |a| format!("{a:.1}")),
+            f.sep.map_or("-".into(), |a| format!("{a:.1}"))
         ),
         0,
     );
@@ -240,18 +236,17 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
         format!(
             "Qual {}  Mode {}",
             f.quality
-                .map(|q| format!("{q} {}", quality_name(q)))
-                .unwrap_or("-".into()),
-            f.pos_mode.as_deref().map(posmode_name).unwrap_or("-")
+                .map_or("-".into(), |q| format!("{q} {}", quality_name(q))),
+            f.pos_mode.as_deref().map_or("-", posmode_name)
         ),
         0,
     );
     push(
         format!(
             "DOP  P{} H{} V{}",
-            f.pdop.map(|v| format!("{v:.2}")).unwrap_or("-".into()),
-            f.hdop.map(|v| format!("{v:.2}")).unwrap_or("-".into()),
-            f.vdop.map(|v| format!("{v:.2}")).unwrap_or("-".into())
+            f.pdop.map_or("-".into(), |v| format!("{v:.2}")),
+            f.hdop.map_or("-".into(), |v| format!("{v:.2}")),
+            f.vdop.map_or("-".into(), |v| format!("{v:.2}"))
         ),
         0,
     );
@@ -268,8 +263,7 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
                 "Lag  {} ({})",
                 app.nmea
                     .lag
-                    .map(|l| format!("{:+.1} ms", l * 1e3))
-                    .unwrap_or("-".into()),
+                    .map_or("-".into(), |l| format!("{:+.1} ms", l * 1e3)),
                 if matches!(app.kind, Kind::Serial { cdc: false, .. }) {
                     "tx start"
                 } else {
@@ -282,8 +276,8 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
     push(
         format!(
             "Spd  {} kn  Trk {}",
-            f.speed_kn.map(|v| format!("{v:.3}")).unwrap_or("-".into()),
-            f.track.map(|v| format!("{v:.1}")).unwrap_or("-".into())
+            f.speed_kn.map_or("-".into(), |v| format!("{v:.3}")),
+            f.track.map_or("-".into(), |v| format!("{v:.1}"))
         ),
         0,
     );
@@ -291,9 +285,9 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
         push(
             format!(
                 "GST  {}/{}/{} m",
-                f.gst_lat.map(|v| format!("{v:.1}")).unwrap_or("-".into()),
-                f.gst_lon.map(|v| format!("{v:.1}")).unwrap_or("-".into()),
-                f.gst_alt.map(|v| format!("{v:.1}")).unwrap_or("-".into())
+                f.gst_lat.map_or("-".into(), |v| format!("{v:.1}")),
+                f.gst_lon.map_or("-".into(), |v| format!("{v:.1}")),
+                f.gst_alt.map_or("-".into(), |v| format!("{v:.1}"))
             ),
             0,
         );
@@ -408,7 +402,7 @@ fn gpsd_box(c: &mut Canvas, app: &App, now: Instant, y: usize, w: usize, h: usiz
             "TPV  {}  mode {}  ept {}",
             g.tpv_time.as_deref().unwrap_or("-"),
             mode,
-            g.tpv_ept.map(|e| format!("{e:.3} s")).unwrap_or("-".into())
+            g.tpv_ept.map_or("-".into(), |e| format!("{e:.3} s"))
         ),
         tpv_style,
     );

@@ -3,7 +3,6 @@
 use gnomon_gnss::metro::{self, App};
 use gnomon_gnss::pps::{self, Ev, Spec};
 use gnomon_gnss::term;
-use std::io::{IsTerminal, Read};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -106,81 +105,30 @@ fn run(o: Opts) -> Result<(), String> {
     }
 
     if let Some(secs) = o.snapshot {
-        let end = Instant::now() + Duration::from_secs_f64(secs);
-        while let Some(left) = end.checked_duration_since(Instant::now()) {
-            if let Ok(ev) = rx.recv_timeout(left) {
-                app.handle(ev, Instant::now());
-            }
-        }
+        term::drain_for(&rx, Duration::from_secs_f64(secs), |ev| {
+            app.handle(ev, Instant::now());
+        });
         let c = metro::render(&app, Instant::now(), SystemTime::now(), o.size.0, o.size.1);
         print!("{}", c.text());
         return Ok(());
     }
 
-    if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
-        return Err(
-            "stdin/stdout must be a terminal (use --snapshot for non-interactive use)".into(),
-        );
-    }
-    term::enter().map_err(|e| e.to_string())?;
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        term::leave();
-        hook(info);
-    }));
-    {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut b = [0u8; 16];
-            let mut stdin = std::io::stdin();
-            while let Ok(n) = stdin.read(&mut b) {
-                if n == 0 {
-                    return;
-                }
-                for &k in &b[..n] {
-                    if tx.send(Ev::Key(k)).is_err() {
-                        return;
-                    }
-                }
-            }
-        });
-    }
-    let r = ui_loop(&mut app, &rx);
-    term::leave();
-    r
-}
-
-fn ui_loop(app: &mut App, rx: &mpsc::Receiver<Ev>) -> Result<(), String> {
-    let mut screen = term::Screen::default();
-    let frame = Duration::from_millis(200);
-    let mut last_draw = Instant::now() - frame;
-    loop {
-        let wait = frame
-            .saturating_sub(last_draw.elapsed())
-            .max(Duration::from_millis(10));
-        let mut evs = Vec::new();
-        match rx.recv_timeout(wait) {
-            Ok(ev) => {
-                evs.push(ev);
-                while let Ok(ev) = rx.try_recv() {
-                    evs.push(ev);
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-        }
-        for ev in evs {
+    // `app` is used by both closures; the loop calls them one at a time.
+    let app = std::cell::RefCell::new(app);
+    term::run_tui(
+        &tx,
+        &rx,
+        Duration::from_millis(200),
+        Ev::Key,
+        |ev| {
+            let mut app = app.borrow_mut();
             match ev {
-                Ev::Key(b'q' | b'Q' | 3 | 4) => return Ok(()),
+                Ev::Key(b'q' | b'Q' | 3 | 4) => return false, // q, ^C, ^D
                 Ev::Key(b'c' | b'C') => app.clear(),
                 ev => app.handle(ev, Instant::now()),
             }
-        }
-        if last_draw.elapsed() >= frame {
-            let (w, h) = term::size();
-            let c = metro::render(app, Instant::now(), SystemTime::now(), w, h);
-            screen.draw(&c).map_err(|e| e.to_string())?;
-            last_draw = Instant::now();
-        }
-    }
+            true
+        },
+        |w, h| metro::render(&app.borrow(), Instant::now(), SystemTime::now(), w, h),
+    )
 }

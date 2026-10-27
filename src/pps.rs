@@ -179,7 +179,7 @@ pub mod device {
             ioctl(
                 f.as_raw_fd(),
                 PPS_GETCAP as std::ffi::c_ulong,
-                &mut mode as *mut i32,
+                std::ptr::addr_of_mut!(mode),
             )
         };
         if r < 0 {
@@ -208,7 +208,7 @@ pub mod device {
             ioctl(
                 f.as_raw_fd(),
                 PPS_FETCH as std::ffi::c_ulong,
-                &mut d as *mut PpsFdata,
+                std::ptr::addr_of_mut!(d),
             )
         };
         if r < 0 {
@@ -535,8 +535,7 @@ impl SimState {
 fn simulate(idx: usize, p: SimProfile, tx: &Sender<Ev>) {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1)
+        .map_or(1, |d| d.as_nanos() as u64)
         ^ (idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let caps = Caps {
         assert: true,

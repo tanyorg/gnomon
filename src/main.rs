@@ -3,7 +3,6 @@
 use gnomon_gnss::source::Ev;
 use gnomon_gnss::{app, serial, source, target, term, ui};
 use std::fs::OpenOptions;
-use std::io::{IsTerminal, Read};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -171,57 +170,28 @@ fn run(o: Opts) -> Result<(), String> {
     app.show_json = o.json;
 
     if let Some(secs) = o.snapshot {
-        let end = Instant::now() + Duration::from_secs_f64(secs);
-        while let Some(left) = end.checked_duration_since(Instant::now()) {
-            if let Ok(ev) = rx.recv_timeout(left) {
-                handle(&mut app, ev);
-            }
-        }
+        term::drain_for(&rx, Duration::from_secs_f64(secs), |ev| {
+            handle(&mut app, ev);
+        });
         let c = ui::render(&app, Instant::now(), SystemTime::now(), o.size.0, o.size.1);
         print!("{}", c.text());
         return Ok(());
     }
 
-    if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
-        return Err(
-            "stdin/stdout must be a terminal (use --snapshot for non-interactive use)".into(),
-        );
-    }
+    term::require_tty()?;
     if o.replay.as_deref() == Some("-") {
         return Err("--replay - needs stdin, which is also the keyboard; use --snapshot".into());
     }
-
-    term::enter().map_err(|e| e.to_string())?;
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        term::leave();
-        hook(info);
-    }));
-
-    // Keyboard reader. stty raw makes read() return per keystroke.
-    {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut b = [0u8; 16];
-            let mut stdin = std::io::stdin();
-            loop {
-                match stdin.read(&mut b) {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => {
-                        for &k in &b[..n] {
-                            if tx.send(Ev::Key(k)).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    let result = ui_loop(&mut app, &rx);
-    term::leave();
-    result
+    // `app` is used by both closures; the loop calls them one at a time.
+    let app = std::cell::RefCell::new(app);
+    term::run_tui(
+        &tx,
+        &rx,
+        Duration::from_millis(100),
+        Ev::Key,
+        |ev| handle(&mut app.borrow_mut(), ev),
+        |w, h| ui::render(&app.borrow(), Instant::now(), SystemTime::now(), w, h),
+    )
 }
 
 /// Returns false when the user asked to quit.
@@ -250,36 +220,4 @@ fn handle(app: &mut app::App, ev: Ev) -> bool {
         },
     }
     true
-}
-
-fn ui_loop(app: &mut app::App, rx: &mpsc::Receiver<Ev>) -> Result<(), String> {
-    let mut screen = term::Screen::default();
-    let frame = Duration::from_millis(100);
-    let mut last_draw = Instant::now() - frame;
-    loop {
-        let wait = frame
-            .saturating_sub(last_draw.elapsed())
-            .max(Duration::from_millis(10));
-        match rx.recv_timeout(wait) {
-            Ok(ev) => {
-                if !handle(app, ev) {
-                    return Ok(());
-                }
-                // Drain whatever else is queued before drawing.
-                while let Ok(ev) = rx.try_recv() {
-                    if !handle(app, ev) {
-                        return Ok(());
-                    }
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-        }
-        if last_draw.elapsed() >= frame {
-            let (w, h) = term::size();
-            let c = ui::render(app, Instant::now(), SystemTime::now(), w, h);
-            screen.draw(&c).map_err(|e| e.to_string())?;
-            last_draw = Instant::now();
-        }
-    }
 }

@@ -239,7 +239,13 @@ pub fn set_exclusive(fd: RawFd, on: bool) {
 pub fn carrier(fd: RawFd) -> Option<bool> {
     let mut bits: i32 = 0;
     // SAFETY: TIOCMGET writes an int.
-    let r = unsafe { ioctl(fd, TIOCMGET as std::ffi::c_ulong, &mut bits as *mut i32) };
+    let r = unsafe {
+        ioctl(
+            fd,
+            TIOCMGET as std::ffi::c_ulong,
+            std::ptr::addr_of_mut!(bits),
+        )
+    };
     (r == 0).then_some(bits & TIOCM_CAR != 0)
 }
 
