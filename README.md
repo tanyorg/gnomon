@@ -196,7 +196,7 @@ gnomon /dev/cu.usbserial-110     # macOS
   checksum are yellow, lines with a bad checksum red.
 
 For a field-by-field reference (sentence sources, codes, colours), see
-[docs/fields.md](https://github.com/tanyorg/gnomon/blob/main/docs/fields.md).
+[docs/gnomon.md](https://github.com/tanyorg/gnomon/blob/main/docs/gnomon.md).
 
 ### Differences from gpsd's gpsmon
 
@@ -240,52 +240,22 @@ options:
 
 Keys: `q` quit / `c` clear statistics
 
-### How it works
-
-- Reading uses `PPS_FETCH`, which is **non-destructive**: metronomon can run
-  next to chronyd or ntpd using the same device without disturbing them.
-- **offset** = the system clock reading at the pulse minus the nearest UTC
-  second (positive: the system clock is ahead). With a clock disciplined from
-  that very PPS this is the residual; otherwise it is the clock error.
-- Each pulse is assigned to the UTC second it is closest to. A second without
-  a pulse counts as **missing**; a pulse more than 100 ms away from the recent
-  median is an **extra** pulse (glitch, ringing) and is left out of the
-  statistics. **reader-gaps** are kernel events that metronomon did not get
-  to see (sequence numbers skipped). After a clock step the reference is
-  re-established automatically.
-- Permission problems come with a hint: `/dev/ppsN` is often root-only
-  (`crw------- root`). Use `sudo`, add yourself to the device's group, or add a
-  udev rule such as `KERNEL=="pps0", GROUP="dialout", MODE="0660"`.
-- Simulation profiles: `gpio` (a few µs of jitter), `uart` (sub-µs, with a
-  100 ms pulse width), `usb` (sub-ms jitter of a USB serial adapter, occasional
-  missing pulse) and `bad` (missing and extra pulses).
-
 ### Reading the screen
 
-The header shows the host name and the system clock, so screenshots from
-several machines can be told apart. Each source gets a box with:
+- **offset** = the system clock reading at the pulse minus the nearest UTC
+  second (positive: the system clock is ahead). Reading uses `PPS_FETCH`,
+  which is non-destructive, so metronomon runs next to chronyd or ntpd.
+- Statistics over 1 and 10 minutes: n, mean, sd, min, max and `drms` (RMS of
+  second-to-second differences; about sd × √2 for white noise).
+- Counters for **missing** seconds, **extra** pulses (more than 100 ms from
+  the recent median), reader gaps and timeouts, and a sparkline of the
+  per-second offsets.
+- The header shows the host name, so screenshots from several machines can be
+  told apart.
 
-- **status line**: state, sequence number, last offset, interval to the
-  previous second, and the pulse width when the clear edge is captured
-- **statistics** over the last 1 and 10 minutes: n, mean, standard deviation,
-  min, max, and `drms`, the RMS of differences between consecutive seconds
-  (about `sd`×√2 for white noise; above that, consecutive offsets alternate,
-  below it, the offset wanders slowly)
-- **counters**: pulses, missing, extra, reader-gaps, timeouts, re-baselined
-- **sparkline** of the per-second offsets, newest on the right, centred on
-  zero, with a robust scale (|median| + 4 × MAD)
-
-| Indication | Meaning |
-|---|---|
-| `OK` (green) | pulses arriving |
-| `waiting for pulses` (yellow) | device open, no pulse seen yet |
-| `NO PULSE for Ns` (red) | no pulse for more than 2.5 s |
-| `ERROR ...` (red) | open or fetch failed; see the hint |
-| counters in yellow | at least one missing, extra or reader-gap event |
-| yellow bar tip in the sparkline | offset outside the scale, bar clipped |
-| red `!` in the sparkline | no pulse in that second |
-| red line in the event log | pulses missing before this one |
-| yellow line in the event log | extra pulse, not counted |
+For the full reference (thresholds, how to read drms against sd, sparkline
+scale, colours, permissions, simulated sources), see
+[docs/metronomon.md](https://github.com/tanyorg/gnomon/blob/main/docs/metronomon.md).
 
 ## Acknowledgements
 
