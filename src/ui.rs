@@ -250,7 +250,13 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
         ),
         0,
     );
-    push(format!("Used {} (GGA)", opt(f.sats_used)), 0);
+    push(
+        match f.sats_used_src {
+            Some(src) => format!("Used {} ({src})", opt(f.sats_used)),
+            None => format!("Used {}", opt(f.sats_used)),
+        },
+        0,
+    );
     let lag_style = match app.nmea.lag {
         Some(l) if l.abs() > 1.0 => st::RED,
         _ => 0,

@@ -46,6 +46,8 @@ pub struct Fix {
     pub quality: Option<u32>,
     pub nav_mode: Option<u32>,
     pub sats_used: Option<u32>,
+    /// Sentence type the satellites-used count came from ("GGA" or "GNS").
+    pub sats_used_src: Option<&'static str>,
     pub pdop: Option<f64>,
     pub hdop: Option<f64>,
     pub vdop: Option<f64>,
@@ -170,6 +172,7 @@ impl Nmea {
                 self.fix.lon = coord(s(fl, 3), s(fl, 4)).or(self.fix.lon);
                 self.fix.quality = u(fl, 5);
                 self.fix.sats_used = u(fl, 6);
+                self.fix.sats_used_src = self.fix.sats_used.map(|_| "GGA");
                 self.fix.hdop = f(fl, 7).or(self.fix.hdop);
                 self.fix.alt = f(fl, 8);
                 self.fix.sep = f(fl, 10);
@@ -183,7 +186,10 @@ impl Nmea {
                 if let Some(m) = s(fl, 5) {
                     self.fix.pos_mode = Some(m.to_string());
                 }
-                self.fix.sats_used = u(fl, 6).or(self.fix.sats_used);
+                if let Some(n) = u(fl, 6) {
+                    self.fix.sats_used = Some(n);
+                    self.fix.sats_used_src = Some("GNS");
+                }
                 self.fix.hdop = f(fl, 7).or(self.fix.hdop);
                 self.fix.alt = f(fl, 8).or(self.fix.alt);
                 self.fix.sep = f(fl, 9).or(self.fix.sep);
@@ -282,6 +288,8 @@ mod tests {
         ];
         want.sort();
         assert_eq!(used, want);
+        assert_eq!(n.fix.sats_used, Some(9));
+        assert_eq!(n.fix.sats_used_src, Some("GNS"));
         assert_eq!(n.fix.pdop, Some(1.8));
         assert_eq!(n.fix.hdop, Some(1.0));
         assert_eq!(n.fix.vdop, Some(1.5));
@@ -325,6 +333,7 @@ mod tests {
         assert_eq!(n.fix.date, Some((2026, 10, 22)));
         assert_eq!(n.fix.quality, Some(1));
         assert_eq!(n.fix.nav_mode, Some(3));
+        assert_eq!(n.fix.sats_used_src, Some("GGA"));
         assert!((n.lag.unwrap() - 0.120).abs() < 1e-6);
         let sats = n.satellites(t0);
         // 5 GPS/SBAS + 2 GLONASS
