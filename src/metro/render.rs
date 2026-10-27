@@ -110,6 +110,11 @@ fn track_box(c: &mut Canvas, t: &Track, now: Instant, y: usize, w: usize, h: usi
     }
     if t.caps != Caps::default() {
         let _ = write!(title, " | {}", t.caps.describe());
+        // The device can capture clear edges, but none has arrived yet
+        // (typical for pps-ldisc on DCD). Say so once, in the title.
+        if t.caps.clear && !t.clear_seen && !t.hist.is_empty() {
+            title.push_str(" (no clear edges)");
+        }
     }
     c.boxed(0, y, w, h, &title);
     let unit = Unit::for_track(t);
@@ -133,23 +138,34 @@ fn track_box(c: &mut Canvas, t: &Track, now: Instant, y: usize, w: usize, h: usi
     };
     let mut s = format!("{state:<10}");
     if let (State::Ok, Some(last)) = (&t.state, t.hist.back()) {
-        let _ = write!(
-            s,
-            "  seq {}  last {}",
-            last.seq,
-            unit.fmt(last.offset_ns as f64)
-        );
+        // Optional fields, in display order, with a drop priority
+        // (higher = dropped first when the line does not fit).
+        let mut fields: Vec<(u8, String)> = vec![
+            (2, format!("seq {}", last.seq)),
+            (0, format!("last {}", unit.fmt(last.offset_ns as f64))),
+        ];
         if let Some(iv) = last.interval_ns {
-            let _ = write!(s, "  intvl {:.9} s", iv as f64 / 1e9);
+            fields.push((1, format!("intvl {:.9} s", iv as f64 / 1e9)));
         }
-        let width = if let Some(wd) = last.width_ns {
-            format!("  width {:.3} ms", wd as f64 / 1e6)
-        } else if t.caps.clear && !t.clear_seen {
-            "  width: clear not captured".to_string()
-        } else {
-            String::new()
+        if let Some(wd) = last.width_ns {
+            fields.push((3, format!("width {:.3} ms", wd as f64 / 1e6)));
+        }
+        let len = |f: &[(u8, String)]| {
+            s.chars().count() + f.iter().map(|(_, x)| 2 + x.chars().count()).sum::<usize>()
         };
-        s.push_str(&width);
+        // Drop whole fields instead of cutting the line mid-word.
+        while len(&fields) > inner {
+            let Some(i) = (0..fields.len())
+                .filter(|&i| fields[i].0 > 0)
+                .max_by_key(|&i| fields[i].0)
+            else {
+                break;
+            };
+            fields.remove(i);
+        }
+        for (_, f) in &fields {
+            let _ = write!(s, "  {f}");
+        }
     }
     put(c, &mut line, &s, sstyle);
     if h < 5 || (matches!(t.state, State::Error(_)) && t.hist.is_empty()) {
@@ -391,6 +407,43 @@ mod tests {
                 app.ascii = ascii;
                 let c = render(&app, now, SystemTime::now(), w, h);
                 assert_eq!(c.text().lines().count(), h);
+            }
+        }
+    }
+
+    #[test]
+    fn status_line_drops_whole_fields() {
+        use super::super::track::pulse;
+        let mut t = Track::new("/dev/pps0".into());
+        t.name = "serial0".into();
+        t.caps = Caps {
+            assert: true,
+            clear: true,
+            can_wait: true,
+        };
+        t.state = State::Ok;
+        let now = Instant::now();
+        for i in 0..5 {
+            t.feed(
+                pulse(1_234_560 + i, 1_800_000_000 + i as i64, 1_200 + i as i32),
+                now,
+            );
+        }
+        for w in [40, 60, 80, 88, 120] {
+            let mut c = Canvas::new(w, 10, false);
+            track_box(&mut c, &t, now, 0, w, 10);
+            let text = c.text();
+            let mut lines = text.lines();
+            let title = lines.next().unwrap();
+            let status = lines.next().unwrap();
+            assert!(!status.contains("clear"), "{status}");
+            assert!(status.contains("last "), "w={w}: {status}");
+            if status.contains("intvl") {
+                assert!(status.contains(" s"), "w={w}: {status}");
+            }
+            if w >= 80 {
+                assert!(title.contains("(no clear edges)"), "w={w}: {title}");
+                assert!(status.contains("intvl 1.000000"), "w={w}: {status}");
             }
         }
     }

@@ -32,7 +32,7 @@ offset = assert timestamp - second
 |---|---|
 | `intvl` | Time from the previous kept pulse's assert to this one. `intvl - 1 s` is almost exactly the change of offset since the previous second (the difference is the clock's frequency error, typically tens of ns) |
 | `width` | Clear minus assert of the same pulse, when the device also reports clear edges |
-| `width: clear not captured` | The device says it can capture clear edges, but none has been seen. Common with pps-ldisc on a serial DCD line; harmless |
+| `(no clear edges)` in the box title | The device says it can capture clear edges, but none has been seen, so there is no `width`. Common with pps-ldisc on a serial DCD line; harmless |
 
 ## Pulses that do not fit
 
@@ -114,7 +114,9 @@ What patterns usually mean:
 | `NO PULSE for Ns` (red) | No pulse for more than 2.5 s |
 | `ERROR ...` (red) | Open or fetch failed. Permission errors come with a hint (see below) |
 
-After the state: sequence number, last offset, `intvl` and `width`.
+After the state: sequence number, last offset, `intvl` and `width`. On a narrow
+terminal whole fields are dropped rather than cut: `width` first, then `seq`,
+then `intvl`; the last offset is always shown.
 
 ## Recent pulses
 
