@@ -40,7 +40,7 @@ struct Opts {
     replay: Option<String>,
     ascii: bool,
     json: bool,
-    snapshot: Option<f64>,
+    snapshot: Option<Duration>,
     size: (usize, usize),
 }
 
@@ -82,21 +82,8 @@ fn parse_args() -> Result<Opts, String> {
             "-j" | "--json" => o.json = true,
             "-l" | "--log" => o.log = Some(val("--log")?),
             "-f" | "--replay" => o.replay = Some(val("--replay")?),
-            "--snapshot" => {
-                o.snapshot = Some(
-                    val("--snapshot")?
-                        .parse()
-                        .map_err(|_| "bad --snapshot seconds")?,
-                )
-            }
-            "--size" => {
-                let v = val("--size")?;
-                let (w, h) = v.split_once(['x', 'X']).ok_or("--size wants WxH")?;
-                o.size = (
-                    w.parse().map_err(|_| "bad width")?,
-                    h.parse().map_err(|_| "bad height")?,
-                );
-            }
+            "--snapshot" => o.snapshot = Some(term::parse_snapshot(&val("--snapshot")?)?),
+            "--size" => o.size = term::parse_size(&val("--size")?, (ui::MIN_W, ui::MIN_H))?,
             s if s.starts_with('-') && s != "-" => return Err(format!("unknown option {s}")),
             s => {
                 if o.target.replace(s.to_string()).is_some() {
@@ -169,8 +156,8 @@ fn run(o: Opts) -> Result<(), String> {
     let mut app = app::App::new(label, o.ascii);
     app.show_json = o.json;
 
-    if let Some(secs) = o.snapshot {
-        term::drain_for(&rx, Duration::from_secs_f64(secs), |ev| {
+    if let Some(d) = o.snapshot {
+        term::drain_for(&rx, d, |ev| {
             handle(&mut app, ev);
         });
         let c = ui::render(&app, Instant::now(), SystemTime::now(), o.size.0, o.size.1);

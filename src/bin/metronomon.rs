@@ -26,7 +26,7 @@ keys: q quit, c clear statistics";
 struct Opts {
     sources: Vec<String>,
     ascii: bool,
-    snapshot: Option<f64>,
+    snapshot: Option<Duration>,
     size: (usize, usize),
 }
 
@@ -50,21 +50,8 @@ fn parse_args() -> Result<Opts, String> {
                 std::process::exit(0);
             }
             "-a" | "--ascii" => o.ascii = true,
-            "--snapshot" => {
-                o.snapshot = Some(
-                    val("--snapshot")?
-                        .parse()
-                        .map_err(|_| "bad --snapshot seconds")?,
-                )
-            }
-            "--size" => {
-                let v = val("--size")?;
-                let (w, h) = v.split_once(['x', 'X']).ok_or("--size wants WxH")?;
-                o.size = (
-                    w.parse().map_err(|_| "bad width")?,
-                    h.parse().map_err(|_| "bad height")?,
-                );
-            }
+            "--snapshot" => o.snapshot = Some(term::parse_snapshot(&val("--snapshot")?)?),
+            "--size" => o.size = term::parse_size(&val("--size")?, (metro::MIN_W, metro::MIN_H))?,
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
             s => o.sources.push(s.to_string()),
         }
@@ -104,8 +91,8 @@ fn run(o: Opts) -> Result<(), String> {
         pps::spawn(i, s, tx.clone());
     }
 
-    if let Some(secs) = o.snapshot {
-        term::drain_for(&rx, Duration::from_secs_f64(secs), |ev| {
+    if let Some(d) = o.snapshot {
+        term::drain_for(&rx, d, |ev| {
             app.handle(ev, Instant::now());
         });
         let c = metro::render(&app, Instant::now(), SystemTime::now(), o.size.0, o.size.1);
