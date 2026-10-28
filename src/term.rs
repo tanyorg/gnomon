@@ -381,3 +381,89 @@ fn event_loop<E>(
         }
     }
 }
+
+// ----------------------------------------------------------- arguments ---
+
+/// Longest accepted `--snapshot` run.
+pub const SNAPSHOT_MAX_SECS: f64 = 86400.0;
+/// Largest accepted `--size` canvas (bounds the cell buffer to a few MB).
+pub const SIZE_MAX: (usize, usize) = (1000, 1000);
+
+/// `--snapshot SECS`: finite, positive and at most a day. Rejecting the
+/// rest here keeps `Duration::from_secs_f64` from panicking later.
+pub fn parse_snapshot(v: &str) -> Result<Duration, String> {
+    let s: f64 = v
+        .parse()
+        .map_err(|_| format!("bad --snapshot seconds: {v}"))?;
+    if !s.is_finite() || s <= 0.0 || s > SNAPSHOT_MAX_SECS {
+        return Err(format!(
+            "--snapshot seconds must be in (0, {SNAPSHOT_MAX_SECS}]: {v}"
+        ));
+    }
+    Ok(Duration::from_secs_f64(s))
+}
+
+/// `--size WxH`, between the renderer's `min` and `SIZE_MAX`.
+pub fn parse_size(v: &str, min: (usize, usize)) -> Result<(usize, usize), String> {
+    let (w, h) = v
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("--size wants WxH: {v}"))?;
+    let w: usize = w.parse().map_err(|_| format!("bad --size width: {v}"))?;
+    let h: usize = h.parse().map_err(|_| format!("bad --size height: {v}"))?;
+    if !(min.0..=SIZE_MAX.0).contains(&w) || !(min.1..=SIZE_MAX.1).contains(&h) {
+        return Err(format!(
+            "--size must be between {}x{} and {}x{}: {v}",
+            min.0, min.1, SIZE_MAX.0, SIZE_MAX.1
+        ));
+    }
+    Ok((w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_seconds() {
+        assert_eq!(parse_snapshot("2.5"), Ok(Duration::from_millis(2500)));
+        assert_eq!(parse_snapshot("86400"), Ok(Duration::from_secs(86400)));
+        for bad in [
+            "0",
+            "-0",
+            "-1",
+            "nan",
+            "NaN",
+            "inf",
+            "-inf",
+            "1e30",
+            "86400.001",
+            "",
+            "x",
+        ] {
+            assert!(parse_snapshot(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn canvas_size() {
+        let min = (80, 24);
+        assert_eq!(parse_size("80x24", min), Ok((80, 24)));
+        assert_eq!(parse_size("1000X1000", min), Ok((1000, 1000)));
+        for bad in [
+            "0x0",
+            "79x24",
+            "80x23",
+            "1001x24",
+            "80x1001",
+            "100000x100000",
+            "80x",
+            "x24",
+            "80",
+            "-80x24",
+            "80x24x1",
+            "",
+        ] {
+            assert!(parse_size(bad, min).is_err(), "{bad}");
+        }
+    }
+}
