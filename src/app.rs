@@ -8,6 +8,9 @@ use std::collections::VecDeque;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub const RAW_KEEP: usize = 2000;
+/// gpsd devices remembered from DEVICES/DEVICE reports. A real gpsd has a
+/// handful; the bound keeps a hostile peer from growing the list forever.
+pub const MAX_DEVICES: usize = 16;
 
 #[derive(Clone)]
 pub struct RawLine {
@@ -215,11 +218,13 @@ impl App {
                     .arr("devices")
                     .unwrap_or(&[])
                     .iter()
+                    .take(MAX_DEVICES)
                     .map(Self::device)
                     .collect();
             }
             Some("DEVICE") => {
                 let d = Self::device(j);
+                let full = g.devices.len() >= MAX_DEVICES;
                 match g.devices.iter_mut().find(|x| x.path == d.path) {
                     Some(x) => {
                         if !d.driver.is_empty() {
@@ -227,7 +232,8 @@ impl App {
                         }
                         x.bps = d.bps.or(x.bps);
                     }
-                    None => g.devices.push(d),
+                    None if !full => g.devices.push(d),
+                    None => {}
                 }
             }
             Some("TPV") => {
@@ -267,5 +273,28 @@ mod tests {
             now,
         );
         assert_eq!(a.gpsd.pps.unwrap().ns, 1000);
+    }
+
+    #[test]
+    fn devices_bounded() {
+        let mut a = App::new("x".into(), true);
+        let now = Instant::now();
+        let dev = |p: &str, d: &str| format!(r#"{{"class":"DEVICE","path":"{p}","driver":"{d}"}}"#);
+        a.line(SystemTime::now(), dev("/dev/ttyAMA0", ""), now);
+        for i in 0..1000 {
+            a.line(SystemTime::now(), dev(&format!("/dev/x{i}"), ""), now);
+        }
+        assert_eq!(a.gpsd.devices.len(), MAX_DEVICES);
+        // Known devices are still updated once the list is full.
+        a.line(SystemTime::now(), dev("/dev/ttyAMA0", "u-blox"), now);
+        assert_eq!(a.gpsd.devices[0].driver, "u-blox");
+
+        let many: Vec<String> = (0..100)
+            .map(|i| format!(r#"{{"path":"/dev/y{i}"}}"#))
+            .collect();
+        let devices = format!(r#"{{"class":"DEVICES","devices":[{}]}}"#, many.join(","));
+        a.line(SystemTime::now(), devices, now);
+        assert_eq!(a.gpsd.devices.len(), MAX_DEVICES);
+        assert_eq!(a.gpsd.devices[0].path, "/dev/y0");
     }
 }
