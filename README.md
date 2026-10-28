@@ -106,8 +106,9 @@ options:
                          width as double)
   -j, --json             show gpsd JSON in the raw window from the start
       --snapshot SECS    no TUI: receive for SECS seconds, print one screen as
-                         text and exit
-      --size WxH         screen size for --snapshot (default 100x40)
+                         text and exit (0 < SECS <= 86400)
+      --size WxH         screen size for --snapshot (default 100x40,
+                         80x24 to 1000x1000)
 ```
 
 Keys: `q` quit / `p` (or space) pause the raw window / `c` clear statistics /
@@ -233,7 +234,9 @@ source (default /dev/pps0):
 options:
   -a, --ascii            ASCII drawing (for ambiguous-width terminals)
       --snapshot SECS    no TUI: run SECS seconds, print one screen, exit
-      --size WxH         canvas size for --snapshot (default 100x40)
+                         (0 < SECS <= 86400)
+      --size WxH         canvas size for --snapshot (default 100x40,
+                         80x16 to 1000x1000)
   -h, --help             this help
   -V, --version          version
 ```

@@ -17,7 +17,9 @@ source (default /dev/pps0):
 options:
   -a, --ascii            ASCII drawing (for ambiguous-width terminals)
       --snapshot SECS    no TUI: run SECS seconds, print one screen, exit
-      --size WxH         canvas size for --snapshot (default 100x40)
+                         (0 < SECS <= 86400)
+      --size WxH         canvas size for --snapshot (default 100x40,
+                         80x16 to 1000x1000)
   -h, --help             this help
   -V, --version          version
 
