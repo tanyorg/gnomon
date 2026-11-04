@@ -32,6 +32,11 @@ gnomon-gnss answers these with two small commands:
 No external crates (std only). Read-only by design: neither tool ever writes
 to a receiver.
 
+A sibling project, [aisnomon](https://github.com/tanyorg/aisnomon), applies
+the same approach to AIS receivers: message rate, channel A/B balance,
+fragment reassembly, checksum and decode errors, and per-MMSI statistics,
+built on the same terminal and serial code.
+
 ![gnomon showing a serial NMEA receiver: satellites, fix, sentence statistics and raw data](gnomon.png)
 
 ## Why another tool?
