@@ -264,6 +264,9 @@ Keys: `q` quit / `c` clear statistics
 For the full reference (thresholds, how to read drms against sd, sparkline
 scale, colours, permissions, simulated sources), see
 [docs/metronomon.md](https://github.com/tanyorg/gnomon/blob/main/docs/metronomon.md).
+Worked examples, such as tracing PPS jitter on a Raspberry Pi to under-voltage,
+are in
+[docs/examples.md](https://github.com/tanyorg/gnomon/blob/main/docs/examples.md).
 
 ## Tested with
 

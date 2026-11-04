@@ -102,7 +102,7 @@ What patterns usually mean:
 | Bars alternating up and down | Zigzag (negative r1) |
 | Long runs on the same side | Slow wander (positive r1) |
 | One tall bar | A spike: one late interrupt, a missed timer |
-| Blocks of a few seconds at regular or irregular intervals | An external disturbance: CPU frequency changes, under-voltage throttling, a periodic job |
+| Blocks of a few seconds at regular or irregular intervals | An external disturbance: CPU frequency changes, under-voltage throttling, a periodic job. See the Raspberry Pi case in [examples.md](examples.md) |
 
 ## Status line
 
