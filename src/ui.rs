@@ -6,7 +6,7 @@
 //!  [Raw data .....................................................]
 //!  footer: keys and counters
 
-use crate::app::{fmt_tod, fmt_utc, App, Offset};
+use crate::app::{fmt_tod, fmt_utc, App, Offset, ERROR_SHOW};
 use crate::nmea::Sys;
 use crate::source::Kind;
 use crate::term::{st, Canvas};
@@ -385,7 +385,12 @@ fn gpsd_box(c: &mut Canvas, app: &App, now: Instant, y: usize, w: usize, h: usiz
         None => "Dev  (none reported)".into(),
     };
     c.put(1, y + 1, &dev, 0);
-    if let Some(e) = &g.error {
+    // A gpsd ERROR is a reply to one request; do not keep it up forever.
+    if let Some((e, _)) = g
+        .error
+        .as_ref()
+        .filter(|(_, at)| now.duration_since(*at) < ERROR_SHOW)
+    {
         let x = (dev.len() + 4).max(w / 2);
         c.put(x, y + 1, &format!("ERROR {e}"), st::RED);
     }
@@ -481,4 +486,28 @@ fn footer(c: &mut Canvas, app: &App, y: usize) {
         st::REV | st::BOLD
     };
     c.put(x, y, &app.status, style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpsd_error_expires() {
+        let mut app = App::new("x".into(), true);
+        app.kind = Kind::Gpsd;
+        let t0 = Instant::now();
+        app.line(
+            SystemTime::now(),
+            r#"{"class":"ERROR","message":"Unrecognized request 'FOO'"}"#.into(),
+            t0,
+        );
+        let shown = |at: Instant| {
+            render(&app, at, SystemTime::now(), 100, 40)
+                .text()
+                .contains("ERROR Unrecognized request")
+        };
+        assert!(shown(t0 + Duration::from_secs(1)));
+        assert!(!shown(t0 + ERROR_SHOW + Duration::from_secs(1)));
+    }
 }

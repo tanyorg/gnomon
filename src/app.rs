@@ -5,12 +5,14 @@ use crate::nmea::{Feed, Nmea};
 use crate::source::Kind;
 use crate::term::st;
 use std::collections::VecDeque;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const RAW_KEEP: usize = 2000;
 /// gpsd devices remembered from DEVICES/DEVICE reports. A real gpsd has a
 /// handful; the bound keeps a hostile peer from growing the list forever.
 pub const MAX_DEVICES: usize = 16;
+/// How long a gpsd ERROR report stays on screen.
+pub const ERROR_SHOW: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct RawLine {
@@ -46,7 +48,8 @@ pub struct Gpsd {
     pub tpv_at: Option<Instant>,
     pub pps: Option<Offset>,
     pub toff: Option<Offset>,
-    pub error: Option<String>,
+    /// Last ERROR report and when it arrived (shown for `ERROR_SHOW`).
+    pub error: Option<(String, Instant)>,
 }
 
 pub struct App {
@@ -244,7 +247,7 @@ impl App {
             }
             Some("PPS") => g.pps = Self::offset(j, now).or(g.pps),
             Some("TOFF") => g.toff = Self::offset(j, now).or(g.toff),
-            Some("ERROR") => g.error = j.str("message").map(str::to_string),
+            Some("ERROR") => g.error = j.str("message").map(|m| (m.to_string(), now)),
             _ => {}
         }
     }
