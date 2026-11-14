@@ -118,6 +118,16 @@ fn run(o: Opts) -> Result<(), String> {
         if o.target.is_some() {
             return Err("--replay and a target are mutually exclusive".into());
         }
+        // These only apply to a live source; say so instead of ignoring them.
+        if o.log.is_some() {
+            return Err("--log does not apply to --replay".into());
+        }
+        if o.speed.is_some() {
+            return Err("--speed does not apply to --replay".into());
+        }
+        if o.force.is_some() {
+            return Err("--raw/--gpsd do not apply to --replay".into());
+        }
         source::spawn_replay(path.clone(), tx.clone());
         format!("replay:{path}")
     } else {
