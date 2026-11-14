@@ -2,7 +2,7 @@
 # Published as gnomon-gnss (the "gnomon" crate name is taken); the
 # installed commands are `gnomon` and `metronomon`.
 name = "gnomon-gnss"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Monitors for NTP servers on GNSS receivers: gnomon shows NMEA output timing, regularity and dropouts (gpsd, raw TCP, serial); metronomon shows per-pulse PPS offset and jitter via the Linux PPS API"
 authors = ["Fuminori -Tany- Tanizaki <tany@tany.org>"]
