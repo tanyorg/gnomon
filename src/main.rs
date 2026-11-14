@@ -137,6 +137,8 @@ fn run(o: Opts) -> Result<(), String> {
                 return Err("--raw/--gpsd do not apply to a serial device".into());
             }
             serial::spawn(spec.to_string(), o.speed, log, tx.clone());
+            // The reader thread is not joined at exit: let go of TIOCEXCL here.
+            term::on_exit(serial::release);
             spec.to_string()
         } else {
             if o.speed.is_some() {
@@ -163,6 +165,7 @@ fn run(o: Opts) -> Result<(), String> {
             handle(&mut app, ev);
         });
         let c = ui::render(&app, Instant::now(), SystemTime::now(), o.size.0, o.size.1);
+        serial::release();
         print!("{}", c.text());
         return Ok(());
     }

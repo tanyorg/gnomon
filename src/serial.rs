@@ -11,6 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -57,6 +58,42 @@ fn open_dev(path: &str) -> io::Result<File> {
         .custom_flags(flags::O_NONBLOCK | flags::O_NOCTTY)
         .open(path)?;
     Ok(f)
+}
+
+/// Descriptor of the port currently held with TIOCEXCL, -1 if none.
+static EXCL_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// An open port in exclusive mode. TIOCEXCL outlives our descriptor while
+/// another process (gpsd, a second monitor) keeps the port open, so it is
+/// cleared before closing.
+struct Port {
+    f: File,
+}
+
+impl Port {
+    fn open(path: &str) -> io::Result<Port> {
+        let f = open_dev(path)?;
+        let fd = f.as_raw_fd();
+        tty::set_exclusive(fd, true);
+        EXCL_FD.store(fd, Ordering::SeqCst);
+        Ok(Port { f })
+    }
+}
+
+impl Drop for Port {
+    fn drop(&mut self) {
+        EXCL_FD.store(-1, Ordering::SeqCst);
+        tty::set_exclusive(self.f.as_raw_fd(), false);
+    }
+}
+
+/// Clear TIOCEXCL on the port the reader thread holds, if any. For program
+/// exit, where that thread is not joined and its `Port` never drops.
+pub fn release() {
+    let fd = EXCL_FD.swap(-1, Ordering::SeqCst);
+    if fd >= 0 {
+        tty::set_exclusive(fd, false);
+    }
 }
 
 fn set_blocking(f: &File) -> io::Result<()> {
@@ -214,15 +251,15 @@ fn session(
     got_data: &mut bool,
 ) -> io::Result<String> {
     let _ = tx.send(Ev::Status(format!("opening {path}")));
-    let mut f = open_dev(path)?;
-    tty::set_exclusive(f.as_raw_fd(), true);
+    let mut port = Port::open(path)?;
+    let f = &mut port.f;
     // CLOCAL first, then blocking reads.
-    configure(&f, fixed.or(*last_good).unwrap_or(AUTOBAUD[0]))?;
-    set_blocking(&f)?;
+    configure(f, fixed.or(*last_good).unwrap_or(AUTOBAUD[0]))?;
+    set_blocking(f)?;
 
     let speed = match fixed {
         Some(s) => {
-            configure(&f, s)?;
+            configure(f, s)?;
             s
         }
         None => {
@@ -234,7 +271,7 @@ fn session(
                 let _ = tx.send(Ev::Status(format!("{path}: probing {s} bps")));
                 // Probe lines are dropped: they were buffered while probing,
                 // so their arrival times are useless for timing statistics.
-                if probe(&mut f, s)? {
+                if probe(f, s)? {
                     found = Some(s);
                     break;
                 }
