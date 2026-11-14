@@ -264,20 +264,37 @@ fn fix(c: &mut Canvas, app: &App, x: usize, y: usize, w: usize, h: usize) {
     if app.kind == Kind::Replay {
         push("Lag  n/a (replay)".into(), st::DIM);
     } else {
+        let method = if matches!(app.kind, Kind::Serial { cdc: false, .. }) {
+            "tx start"
+        } else {
+            "host-fix"
+        };
+        // Whole seconds (a receiver's labelling error) apart from the rest,
+        // both here and in the spread below, so the numbers line up.
+        let whole = app.nmea.lag_whole();
+        let ms = |v: f64| (v - whole as f64) * 1e3;
         push(
             format!(
-                "Lag  {} ({})",
-                app.nmea
-                    .lag
-                    .map_or("-".into(), |l| format!("{:+.1} ms", l * 1e3)),
-                if matches!(app.kind, Kind::Serial { cdc: false, .. }) {
-                    "tx start"
-                } else {
-                    "host-fix"
-                }
+                "Lag  {} ({method})",
+                app.nmea.lag.map_or("-".into(), |l| match whole {
+                    0 => format!("{:+.1} ms", ms(l)),
+                    w => format!("{w:+} s {:+.1} ms", ms(l)),
+                })
             ),
             lag_style,
         );
+        // Spread of the output timing over the kept epochs, in ms.
+        if let Some(ls) = app.nmea.lag_stats() {
+            push(
+                format!(
+                    "     sd {:.1}  {:+.1}..{:+.1}",
+                    ls.sd * 1e3,
+                    ms(ls.min),
+                    ms(ls.max)
+                ),
+                st::DIM,
+            );
+        }
     }
     push(
         format!(
@@ -509,5 +526,59 @@ mod tests {
         };
         assert!(shown(t0 + Duration::from_secs(1)));
         assert!(!shown(t0 + ERROR_SHOW + Duration::from_secs(1)));
+    }
+
+    /// Fix box lines for a serial source receiving one GNS per epoch with
+    /// the given lags (ms precision).
+    fn lag_lines(lags: &[f64]) -> Vec<String> {
+        let mut app = App::new("x".into(), true);
+        app.kind = Kind::Serial {
+            speed: 9600,
+            cdc: true,
+        };
+        let now = Instant::now();
+        let day = 20_000.0 * 86400.0;
+        for (i, &lag) in lags.iter().enumerate() {
+            let tod = 3600 + i as u32;
+            let body = format!(
+                "GNGNS,{:02}{:02}{:02}.000,3335.4073,N,13024.1030,E,AAA,12,0.8,17.7,27.0,,,V",
+                tod / 3600,
+                tod / 60 % 60,
+                tod % 60
+            );
+            let ck = body.bytes().fold(0u8, |a, b| a ^ b);
+            let ts = SystemTime::UNIX_EPOCH + Duration::from_secs_f64(day + f64::from(tod) + lag);
+            app.line(ts, format!("${body}*{ck:02X}"), now);
+        }
+        render(&app, now, SystemTime::now(), 100, 40)
+            .text()
+            .lines()
+            .filter_map(|l| {
+                l.split('|')
+                    .map(str::trim)
+                    .find(|p| p.starts_with("Lag") || p.starts_with("sd"))
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lag_lines_split_whole_seconds() {
+        // Plain output delay: milliseconds only.
+        assert_eq!(
+            lag_lines(&[0.370, 0.372, 0.371]),
+            ["Lag  +371.0 ms (host-fix)", "sd 0.8  +370.0..+372.0"]
+        );
+        // Sent 16 ms ahead and labelled UTC + 19 s: the rest stays negative.
+        assert_eq!(
+            lag_lines(&[-19.016, -19.015, -19.016]),
+            ["Lag  -19 s -16.0 ms (host-fix)", "sd 0.5  -16.0..-15.0"]
+        );
+        // Output delay near 0.5 s: the last epoch crosses the half second
+        // but the whole part, from the median, does not move.
+        assert_eq!(
+            lag_lines(&[-18.552, -18.551, -18.553, -18.490]),
+            ["Lag  -19 s +510.0 ms (host-fix)", "sd 26.9  +447.0..+510.0"]
+        );
     }
 }

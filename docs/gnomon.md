@@ -122,6 +122,23 @@ Lag = time the sentence reached the host - UTC time written in the sentence
 It is the sum of the receiver's output delay, transport delay and host clock
 error, and turns red above 1 s.
 
+When the typical lag (the median of the last 60 epochs) is 1.5 s or more
+from zero, the whole seconds are shown apart from the rest, e.g.
+`Lag  -19 s -15.6 ms`. A receiver that labels its sentences with a
+whole-second error then shows that error and its real output timing
+separately. GPS time is UTC + 18 s; a receiver that sends the time of the
+second about to start, ahead of it, adds one more second and shows a negative
+rest. The SEIKO TS-2560's COM port, for example, reads `-19 s -15.6 ms`.
+Because the whole part follows the median rather than each epoch, an output
+delay near half a second (a GT-502MGG-N at 9600 bps) does not make the
+display jump between `-19 s +490 ms` and `-18 s -490 ms`.
+
+The dim line below shows the spread over the last 60 epochs, in ms, with the
+same whole seconds taken out: `sd 0.4  -16.4..-15.2` is the standard
+deviation and the min..max. It shows how steady the receiver's output timing
+is, which matters when NMEA alone (without PPS) is used as a time source, e.g.
+for chrony's `refclock SHM` offset and delay settings.
+
 | Label | Used for | How the arrival time is taken |
 |---|---|---|
 | `host-fix` | gpsd, raw TCP, USB CDC serial | Arrival time as-is |

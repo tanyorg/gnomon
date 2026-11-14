@@ -12,7 +12,7 @@ mod sats;
 mod sentence;
 mod stats;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::time::Instant;
 
 pub use sats::{SatTracker, SatView, SAT_STALE, USED_STALE};
@@ -59,6 +59,23 @@ pub struct Fix {
     pub last_txt: Option<String>,
 }
 
+/// Epochs kept for the lag statistics (one minute at 1 Hz).
+pub const LAG_KEEP: usize = 60;
+
+/// A typical lag at least this far from zero is shown as whole seconds plus
+/// the rest; closer to zero (a slow link) it stays in milliseconds.
+pub const LAG_SPLIT: f64 = 1.5;
+
+/// Lag statistics over the kept epochs, in seconds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LagStats {
+    pub n: usize,
+    pub mean: f64,
+    pub sd: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
 #[derive(Debug, Default)]
 pub struct Nmea {
     pub fix: Fix,
@@ -68,6 +85,8 @@ pub struct Nmea {
     pub no_ck: u64,
     /// Host receive time minus fix time-of-day for the first sentence of each epoch.
     pub lag: Option<f64>,
+    /// The last `LAG_KEEP` lags, oldest first.
+    pub lag_hist: VecDeque<f64>,
     last_epoch_tod: Option<f64>,
     epoch_seq: u64,
     sats: SatTracker,
@@ -85,6 +104,58 @@ pub enum Feed {
 impl Nmea {
     pub fn clear(&mut self) {
         *self = Nmea::default();
+    }
+
+    /// Whole seconds to show apart from the lag (0: show it in ms only).
+    ///
+    /// A receiver that labels its sentences with a whole-second error (GPS
+    /// time is UTC + 18 s; one that announces the second about to start
+    /// adds 1 s) then reads as e.g. `-19 s` plus its real output timing.
+    /// The whole part is the median of the kept lags, rounded, so it holds
+    /// still while single epochs jitter across a half second: an output
+    /// delay near 0.5 s (GT-502MGG-N at 9600 bps) does not flip the display
+    /// between `-19 s +490 ms` and `-18 s -490 ms`, and a receiver that
+    /// sends ahead of the second keeps a negative rest (`-19 s -16 ms`).
+    pub fn lag_whole(&self) -> i64 {
+        let mut v: Vec<f64> = self.lag_hist.iter().copied().collect();
+        if v.is_empty() {
+            return 0;
+        }
+        v.sort_by(f64::total_cmp);
+        let med = v[v.len() / 2];
+        if med.abs() < LAG_SPLIT {
+            0
+        } else {
+            med.round() as i64
+        }
+    }
+
+    /// Statistics of the kept lags; None until two epochs have been seen.
+    pub fn lag_stats(&self) -> Option<LagStats> {
+        let n = self.lag_hist.len();
+        if n < 2 {
+            return None;
+        }
+        let mean = self.lag_hist.iter().sum::<f64>() / n as f64;
+        let var = self
+            .lag_hist
+            .iter()
+            .map(|v| (v - mean).powi(2))
+            .sum::<f64>()
+            / n as f64;
+        let (min, max) = self
+            .lag_hist
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+                (a.min(v), b.max(v))
+            });
+        Some(LagStats {
+            n,
+            mean,
+            sd: var.sqrt(),
+            min,
+            max,
+        })
     }
 
     /// `host_tod`: host UTC seconds-of-day at receipt (for lag measurement).
@@ -136,6 +207,10 @@ impl Nmea {
                 d += 86400.0;
             }
             self.lag = Some(d);
+            if self.lag_hist.len() == LAG_KEEP {
+                self.lag_hist.pop_front();
+            }
+            self.lag_hist.push_back(d);
         }
         self.fix.tod = Some(t);
     }
@@ -538,6 +613,68 @@ mod tests {
             assert!((p - 1.0).abs() < 0.05, "{k} {p}");
         }
         assert_eq!(n.stats["GPGSV"].count, 24);
+    }
+
+    fn fmt_hms(t: f64) -> String {
+        let ms = (t * 1000.0).round() as u64;
+        let s = ms / 1000;
+        format!(
+            "{:02}{:02}{:02}.{:03}",
+            s / 3600 % 24,
+            s / 60 % 60,
+            s % 60,
+            ms % 1000
+        )
+    }
+
+    /// Feed one GNS per epoch with the given lags (host time - sentence time).
+    fn with_lags(lags: &[f64]) -> Nmea {
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        for (i, &lag) in lags.iter().enumerate() {
+            let tod = 1000.0 + i as f64;
+            let line = ck(&format!(
+                "GNGNS,{},3335.4073,N,13024.1030,E,AAA,12,0.8,17.7,27.0,,,V",
+                fmt_hms(tod)
+            ));
+            n.feed(&line, t0, tod + lag);
+        }
+        n
+    }
+
+    #[test]
+    fn lag_whole_seconds() {
+        assert_eq!(Nmea::default().lag_whole(), 0);
+        // Ordinary output delays and slow links stay in milliseconds.
+        assert_eq!(with_lags(&[0.371, 0.372, 0.370]).lag_whole(), 0);
+        assert_eq!(with_lags(&[1.2, 1.3, 1.2]).lag_whole(), 0);
+        // TS-2560 COM port: labelled UTC + 19 s, sent ~16 ms ahead.
+        assert_eq!(with_lags(&[-19.0156, -19.0152, -19.0164]).lag_whole(), -19);
+        // Output delay near 0.5 s with a 19 s label error: one epoch past the
+        // half second does not move the whole part.
+        let mut lags = vec![-18.552; 30];
+        lags.push(-18.49);
+        let n = with_lags(&lags);
+        assert_eq!(n.lag_whole(), -19);
+        assert!((n.lag.unwrap() + 18.49).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lag_stats_window() {
+        let mut n = with_lags(&[0.0]);
+        assert!(n.lag_stats().is_none());
+        // 70 epochs of -19.0145 .. -19.0165: only the last 60 are kept.
+        let lags: Vec<f64> = (0..70)
+            .map(|i| -19.0145 - f64::from(i % 3) * 0.001)
+            .collect();
+        n = with_lags(&lags);
+        let s = n.lag_stats().unwrap();
+        assert_eq!(s.n, LAG_KEEP);
+        assert!((s.min + 19.0165).abs() < 1e-6, "{s:?}");
+        assert!((s.max + 19.0145).abs() < 1e-6, "{s:?}");
+        assert!(s.sd > 0.0 && s.sd < 0.001, "{s:?}");
+        n.clear();
+        assert!(n.lag_stats().is_none());
     }
 
     #[test]
