@@ -213,9 +213,9 @@ pub mod device {
         };
         if r < 0 {
             let e = io::Error::last_os_error();
-            return match e.raw_os_error() {
-                Some(110) => Ok(None), // ETIMEDOUT
-                Some(4) => Ok(None),   // EINTR
+            // ETIMEDOUT / EINTR; by kind, as the numbers vary by architecture.
+            return match e.kind() {
+                io::ErrorKind::TimedOut | io::ErrorKind::Interrupted => Ok(None),
                 _ => Err(e),
             };
         }
