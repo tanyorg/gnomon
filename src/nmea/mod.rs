@@ -177,7 +177,13 @@ impl Nmea {
                 self.fix.alt = f(fl, 8);
                 self.fix.sep = f(fl, 10);
                 self.fix.diff_age = f(fl, 12);
-                self.fix.diff_station = s(fl, 13).map(str::to_string);
+                // Some receivers (u-blox 7 among them) put 0000 in the station
+                // ID with no differential age, also when SBAS corrections are
+                // in use (quality 2): an all-zero ID without an age names no
+                // station.
+                self.fix.diff_station = s(fl, 13)
+                    .filter(|id| self.fix.diff_age.is_some() || id.bytes().any(|b| b != b'0'))
+                    .map(str::to_string);
             }
             "GNS" => {
                 self.epoch(tod(s(fl, 0)), host_tod);
@@ -532,6 +538,27 @@ mod tests {
             assert!((p - 1.0).abs() < 0.05, "{k} {p}");
         }
         assert_eq!(n.stats["GPGSV"].count, 24);
+    }
+
+    #[test]
+    fn gga_zero_station_without_age_is_ignored() {
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        n.feed(&ck("GPGGA,061435.00,,,,,0,02,3.25,,,,,,0000"), t0, 0.0);
+        assert_eq!(n.fix.diff_station, None);
+        n.feed(
+            &ck("GPGGA,061436.00,3335.4073,N,13024.1030,E,2,12,0.8,17.7,M,27.0,M,1.0,0000"),
+            t0,
+            0.0,
+        );
+        assert_eq!(n.fix.diff_age, Some(1.0));
+        assert_eq!(n.fix.diff_station.as_deref(), Some("0000"));
+        n.feed(
+            &ck("GPGGA,061437.00,3335.4073,N,13024.1030,E,2,12,0.8,17.7,M,27.0,M,,0137"),
+            t0,
+            0.0,
+        );
+        assert_eq!(n.fix.diff_station.as_deref(), Some("0137"));
     }
 
     #[test]
