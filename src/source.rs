@@ -223,12 +223,9 @@ pub fn spawn_replay(path: String, tx: Sender<Ev>) {
             if paced {
                 if let Some(t) = epoch_tod(&s) {
                     if let Some(p) = prev {
-                        let mut d = t - p;
-                        if d < 0.0 {
-                            d += 86400.0;
-                        }
+                        let d = pace(p, t);
                         if d > 1e-6 {
-                            thread::sleep(Duration::from_secs_f64(d.min(5.0)));
+                            thread::sleep(Duration::from_secs_f64(d));
                         }
                     }
                     prev = Some(t);
@@ -240,6 +237,18 @@ pub fn spawn_replay(path: String, tx: Sender<Ev>) {
         }
         let _ = tx.send(Ev::Disconnected("end of input".into()));
     });
+}
+
+/// Seconds to wait between sentences stamped `prev` and `t` (time of day).
+/// A big backward jump is midnight; a small one (concatenated captures, a
+/// receiver restart, out-of-order talkers) means no wait rather than most
+/// of a day. Capped so gaps in the capture do not stall the replay.
+fn pace(prev: f64, t: f64) -> f64 {
+    let mut d = t - prev;
+    if d < -43200.0 {
+        d += 86400.0;
+    }
+    d.clamp(0.0, 5.0)
 }
 
 fn epoch_tod(line: &str) -> Option<f64> {
@@ -263,6 +272,18 @@ mod tests {
         sp.push(b"$GPA*00\r\n$GP", |l| v.push(l));
         sp.push(b"B*00\r\n\r\n", |l| v.push(l));
         assert_eq!(v, vec!["$GPA*00", "$GPB*00"]);
+    }
+
+    #[test]
+    fn replay_pacing() {
+        assert_eq!(pace(100.0, 101.0), 1.0);
+        assert_eq!(pace(100.0, 100.0), 0.0);
+        // midnight: 23:59:59 -> 00:00:00
+        assert_eq!(pace(86399.0, 0.0), 1.0);
+        // small step back: no wait (used to sleep the 5 s cap)
+        assert_eq!(pace(100.0, 99.0), 0.0);
+        // gap in the capture: capped
+        assert_eq!(pace(100.0, 400.0), 5.0);
     }
 
     #[test]
