@@ -308,6 +308,9 @@ mod tests {
         // Legacy sentence with an empty VDOP is not mistaken for 4.10.
         let l = gsa_layout(&f("A,3,05,,,,,,,,,,,,1.10,0.62,")).unwrap();
         assert_eq!(l.sysid, None);
+        // ... nor one whose VDOP is written as an integer.
+        let l = gsa_layout(&f("A,3,05,13,15,,,,,,,,,,1.10,0.62,1")).unwrap();
+        assert_eq!((l.prns, l.dop, l.sysid), (2..14, 14, None));
         assert!(gsa_layout(&f("A,3")).is_none());
     }
 

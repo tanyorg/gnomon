@@ -178,17 +178,23 @@ pub(crate) struct GsaLayout {
     pub sysid: Option<u8>,
 }
 
+/// Fields of a standard pre-4.10 GSA: mode, fix type, 12 PRNs, 3 DOPs.
+const LEGACY_FIELDS: usize = 2 + 12 + 3;
+
 pub(crate) fn gsa_layout(fl: &[&str]) -> Option<GsaLayout> {
     let n = fl.len();
     if n < 5 {
         return None;
     }
     // NMEA 4.10+: a trailing small integer (no decimal point) after the DOPs.
+    // Exactly the legacy count (mode, fix, 12 PRNs, 3 DOPs) has no system
+    // ID, even when VDOP happens to be written as an integer.
     let last = fl[n - 1];
-    let sysid = (!last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| last.parse::<u8>().ok())
-        .flatten()
-        .filter(|&v| (1..=15).contains(&v));
+    let sysid =
+        (n != LEGACY_FIELDS && !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| last.parse::<u8>().ok())
+            .flatten()
+            .filter(|&v| (1..=15).contains(&v));
     let tail = if sysid.is_some() { 4 } else { 3 };
     if n < 2 + tail {
         return None;
