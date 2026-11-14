@@ -231,8 +231,16 @@ pub fn coord(v: Option<&str>, hemi: Option<&str>) -> Option<f64> {
 /// hhmmss[.sss] -> seconds of day.
 pub fn tod(v: Option<&str>) -> Option<f64> {
     let v = v?;
-    if v.len() < 6 {
+    // Six digits, then optionally '.' and digits. f64 parsing alone would
+    // accept signs, exponents and "inf" in any of the pieces.
+    let b = v.as_bytes();
+    if b.len() < 6 || !b[..6].iter().all(u8::is_ascii_digit) {
         return None;
+    }
+    if let Some((&dot, frac)) = b[6..].split_first() {
+        if dot != b'.' || !frac.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
     }
     let h: f64 = v[0..2].parse().ok()?;
     let m: f64 = v[2..4].parse().ok()?;
@@ -258,6 +266,19 @@ mod tests {
         let s = split("$PUBX,00,foo").unwrap();
         assert_eq!((s.talker, s.kind, s.ck), (None, "PUBX", CkStatus::Missing));
         assert!(split("{\"class\":\"TPV\"}").is_none());
+    }
+
+    #[test]
+    fn time_of_day() {
+        assert_eq!(tod(Some("123456")), Some(45296.0));
+        assert_eq!(tod(Some("123456.25")), Some(45296.25));
+        assert_eq!(tod(Some("235960")), Some(86400.0)); // leap second
+        for bad in [
+            "-10000", "+12345", "1234567", "12345", "12:34:56", "1234.5e1", "12345a", "235961.5",
+            "240000", "126000",
+        ] {
+            assert_eq!(tod(Some(bad)), None, "{bad}");
+        }
     }
 
     #[test]
