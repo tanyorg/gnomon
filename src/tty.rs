@@ -425,6 +425,18 @@ mod tests {
         assert_ne!(t.c_cflag & CLOCAL, 0);
         assert_eq!(t.c_cflag & (HUPCL | FLOW_BITS), 0);
         assert_eq!((t.c_cc[VMIN], t.c_cc[VTIME]), (0, 5));
+        // The kernel holds the real rate, and the standard code in CBAUD
+        // (B115200 = 0o10002) for programs using the legacy struct; CIBAUD
+        // stays 0 (input speed = output speed).
+        assert_eq!((t.c_ispeed, t.c_ospeed), (115200, 115200));
+        assert_eq!(t.c_cflag & 0o10017, 0o10002);
+        assert_eq!(t.c_cflag & (0o10017 << 16), 0);
+        // 8N1: CS8, no parity.
+        assert_eq!(t.c_cflag & 0o460, 0o60);
+        configure(sf.as_raw_fd(), 9600).unwrap();
+        let t = get(sf.as_raw_fd()).unwrap();
+        assert_eq!((t.c_ispeed, t.c_ospeed), (9600, 9600));
+        assert_eq!(t.c_cflag & 0o10017, 0o15);
         assert!(configure(sf.as_raw_fd(), 12345).is_err());
         assert_eq!(carrier(sf.as_raw_fd()), None); // pty: no modem lines
         drop(mf);
