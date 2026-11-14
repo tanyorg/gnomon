@@ -335,6 +335,22 @@ fn reraise(sig: i32) -> ! {
 
 // ------------------------------------------------------------ sessions ---
 
+static CLEANUP: OnceLock<fn()> = OnceLock::new();
+
+/// Register a function that `run_tui` calls after restoring the terminal,
+/// however the session ends (quit, signal, panic). Source threads are not
+/// joined at exit, so this is where they can undo state they set on shared
+/// resources. At most one; later registrations are ignored.
+pub fn on_exit(f: fn()) {
+    let _ = CLEANUP.set(f);
+}
+
+fn run_cleanup() {
+    if let Some(f) = CLEANUP.get() {
+        f();
+    }
+}
+
 /// Feed events to `handle` until `d` has passed (used by `--snapshot`).
 pub fn drain_for<E>(rx: &mpsc::Receiver<E>, d: Duration, mut handle: impl FnMut(E)) {
     let end = Instant::now() + d;
@@ -374,11 +390,13 @@ pub fn run_tui<E: Send + 'static>(
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         leave();
+        run_cleanup();
         hook(info);
     }));
     spawn_keys(tx.clone(), key);
     let r = event_loop(rx, frame, handle, draw);
     leave();
+    run_cleanup();
     match SIGNALLED.load(Ordering::SeqCst) {
         0 => r,
         sig => reraise(sig),
