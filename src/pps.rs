@@ -249,27 +249,39 @@ pub mod device {
             Ok(m) => m,
             Err(_) => return String::new(),
         };
-        let mode = m.mode() & 0o777;
         let base = std::fs::canonicalize(path)
             .ok()
             .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "pps0".into());
+        let gid = m.gid().to_string();
+        let group = std::fs::read_to_string("/etc/group")
+            .ok()
+            .and_then(|g| {
+                g.lines().find_map(|l| {
+                    let f: Vec<&str> = l.split(':').collect();
+                    (f.len() > 2 && f[2] == gid).then(|| f[0].to_string())
+                })
+            })
+            .unwrap_or_else(|| format!("gid {gid}"));
+        hint_text(path, &base, m.mode() & 0o777, m.gid(), &group)
+    }
+
+    /// The advice itself, separated from the file system for testing.
+    /// Joining the device's group is only suggested when that group is not
+    /// root's: adding a user to gid 0 to read a PPS device is bad advice.
+    fn hint_text(path: &str, base: &str, mode: u32, gid: u32, group: &str) -> String {
+        let udev = format!("KERNEL==\"{base}\", GROUP=\"dialout\", MODE=\"0660\"");
         if mode & 0o060 == 0 {
             format!(
-                " ({path} is mode {mode:03o}, root only: run with sudo, or add a udev rule such as \
-                 KERNEL==\"{base}\", GROUP=\"dialout\", MODE=\"0660\")"
+                " ({path} is mode {mode:03o}, root only: run with sudo, or add a udev rule \
+                 such as {udev})"
+            )
+        } else if gid == 0 {
+            format!(
+                " ({path} is mode {mode:03o}, group {group}: run with sudo, or add a udev rule \
+                 such as {udev})"
             )
         } else {
-            let gid = m.gid().to_string();
-            let group = std::fs::read_to_string("/etc/group")
-                .ok()
-                .and_then(|g| {
-                    g.lines().find_map(|l| {
-                        let f: Vec<&str> = l.split(':').collect();
-                        (f.len() > 2 && f[2] == gid).then(|| f[0].to_string())
-                    })
-                })
-                .unwrap_or_else(|| format!("gid {gid}"));
             format!(
                 " (mode {mode:03o}, group {group}: sudo usermod -aG {group} $USER, then log in again)"
             )
@@ -339,6 +351,17 @@ pub mod device {
                 assert_eq!(PPS_FETCH, 0xc004_70a4);
                 assert_eq!(PPS_GETCAP, 0x8004_70a3);
             }
+        }
+
+        #[test]
+        fn permission_advice() {
+            let h = hint_text("/dev/pps0", "pps0", 0o600, 0, "root");
+            assert!(h.contains("root only") && h.contains("udev"), "{h}");
+            // group root: never suggest joining it
+            let h = hint_text("/dev/pps0", "pps0", 0o640, 0, "root");
+            assert!(h.contains("udev") && !h.contains("usermod"), "{h}");
+            let h = hint_text("/dev/pps0", "pps0", 0o660, 20, "dialout");
+            assert!(h.contains("usermod -aG dialout"), "{h}");
         }
 
         #[test]
