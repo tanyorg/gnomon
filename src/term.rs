@@ -4,6 +4,7 @@
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -279,6 +280,59 @@ impl Screen {
     }
 }
 
+// ------------------------------------------------------------- signals ---
+
+// Same numbers on Linux, macOS and the BSDs.
+const SIGHUP: i32 = 1;
+const SIGINT: i32 = 2;
+const SIGTERM: i32 = 15;
+const SIG_DFL: usize = 0;
+const SIG_IGN: usize = 1;
+
+extern "C" {
+    // signal(2) rather than sigaction(2): struct sigaction differs between
+    // systems, and glibc, macOS and the BSDs all give signal() BSD semantics
+    // (handler stays installed, interrupted calls restart).
+    fn signal(sig: i32, handler: usize) -> usize;
+    fn raise(sig: i32) -> i32;
+}
+
+/// Signal that asked us to stop, 0 if none. Polled by the event loop.
+static SIGNALLED: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn on_signal(sig: i32) {
+    // Only an atomic store: async-signal-safe.
+    SIGNALLED.store(sig, Ordering::SeqCst);
+}
+
+/// Turn SIGHUP, SIGINT and SIGTERM into a request to leave the event loop,
+/// so the terminal is restored (`kill`, `timeout`, a dropped ssh session).
+/// In raw mode ^C is a key, not SIGINT; this is for signals from outside.
+/// A signal the parent set to be ignored (e.g. SIGHUP under nohup) stays
+/// ignored.
+fn catch_signals() {
+    let handler: extern "C" fn(i32) = on_signal;
+    for sig in [SIGHUP, SIGINT, SIGTERM] {
+        // SAFETY: installing a handler that only stores to an atomic.
+        unsafe {
+            if signal(sig, handler as usize) == SIG_IGN {
+                signal(sig, SIG_IGN);
+            }
+        }
+    }
+}
+
+/// After the terminal is restored: die from the same signal, so the parent
+/// (a shell, timeout(1)) sees the usual "killed by signal" status.
+fn reraise(sig: i32) -> ! {
+    // SAFETY: restoring the default action and raising it.
+    unsafe {
+        signal(sig, SIG_DFL);
+        raise(sig);
+    }
+    std::process::exit(128 + sig)
+}
+
 // ------------------------------------------------------------ sessions ---
 
 /// Feed events to `handle` until `d` has passed (used by `--snapshot`).
@@ -304,7 +358,8 @@ pub fn require_tty() -> Result<(), String> {
 /// reader thread that sends `key(byte)` into the event channel, and a loop
 /// that feeds events to `handle` (return `false` to quit) and redraws with
 /// `draw(width, height)` at most once per `frame`. The terminal is restored
-/// on return and on panic.
+/// on return, on panic, and on SIGHUP/SIGINT/SIGTERM (after which the
+/// process dies from that signal).
 pub fn run_tui<E: Send + 'static>(
     tx: &mpsc::Sender<E>,
     rx: &mpsc::Receiver<E>,
@@ -314,6 +369,7 @@ pub fn run_tui<E: Send + 'static>(
     draw: impl FnMut(usize, usize) -> Canvas,
 ) -> Result<(), String> {
     require_tty()?;
+    catch_signals();
     enter().map_err(|e| e.to_string())?;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -323,7 +379,10 @@ pub fn run_tui<E: Send + 'static>(
     spawn_keys(tx.clone(), key);
     let r = event_loop(rx, frame, handle, draw);
     leave();
-    r
+    match SIGNALLED.load(Ordering::SeqCst) {
+        0 => r,
+        sig => reraise(sig),
+    }
 }
 
 /// Keyboard reader. `stty raw` makes read() return per keystroke.
@@ -356,6 +415,10 @@ fn event_loop<E>(
     let mut screen = Screen::default();
     let mut last_draw: Option<Instant> = None;
     loop {
+        // A caught signal is noticed within one wait (at most `frame`).
+        if SIGNALLED.load(Ordering::SeqCst) != 0 {
+            return Ok(());
+        }
         let wait = last_draw.map_or(MIN_WAIT, |t| {
             frame.saturating_sub(t.elapsed()).max(MIN_WAIT)
         });
