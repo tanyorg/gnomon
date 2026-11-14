@@ -529,7 +529,7 @@ mod tests {
     }
 
     /// Fix box lines for a serial source receiving one GNS per epoch with
-    /// the given lags (ms precision).
+    /// the given lags (ms precision). The first epoch is not in the spread.
     fn lag_lines(lags: &[f64]) -> Vec<String> {
         let mut app = App::new("x".into(), true);
         app.kind = Kind::Serial {
@@ -567,7 +567,7 @@ mod tests {
         // Plain output delay: milliseconds only.
         assert_eq!(
             lag_lines(&[0.370, 0.372, 0.371]),
-            ["Lag  +371.0 ms (host-fix)", "sd 0.8  +370.0..+372.0"]
+            ["Lag  +371.0 ms (host-fix)", "sd 0.5  +371.0..+372.0"]
         );
         // Sent 16 ms ahead and labelled UTC + 19 s: the rest stays negative.
         assert_eq!(
@@ -578,7 +578,7 @@ mod tests {
         // but the whole part, from the median, does not move.
         assert_eq!(
             lag_lines(&[-18.552, -18.551, -18.553, -18.490]),
-            ["Lag  -19 s +510.0 ms (host-fix)", "sd 26.9  +447.0..+510.0"]
+            ["Lag  -19 s +510.0 ms (host-fix)", "sd 29.2  +447.0..+510.0"]
         );
     }
 }

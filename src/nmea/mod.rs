@@ -87,6 +87,10 @@ pub struct Nmea {
     pub lag: Option<f64>,
     /// The last `LAG_KEEP` lags, oldest first.
     pub lag_hist: VecDeque<f64>,
+    /// An epoch boundary has been seen since start or `resync`. Until then
+    /// we may have joined mid-epoch, and the first time-bearing sentence we
+    /// saw need not be the epoch's first one (its lag would be too large).
+    synced: bool,
     last_epoch_tod: Option<f64>,
     epoch_seq: u64,
     sats: SatTracker,
@@ -104,6 +108,12 @@ pub enum Feed {
 impl Nmea {
     pub fn clear(&mut self) {
         *self = Nmea::default();
+    }
+
+    /// The input restarted (a new connection): the next epoch may be joined
+    /// mid-way, so keep it out of the lag statistics.
+    pub fn resync(&mut self) {
+        self.synced = false;
     }
 
     /// Whole seconds to show apart from the lag (0: show it in ms only).
@@ -207,10 +217,14 @@ impl Nmea {
                 d += 86400.0;
             }
             self.lag = Some(d);
-            if self.lag_hist.len() == LAG_KEEP {
-                self.lag_hist.pop_front();
+            if self.synced {
+                if self.lag_hist.len() == LAG_KEEP {
+                    self.lag_hist.pop_front();
+                }
+                self.lag_hist.push_back(d);
+            } else {
+                self.synced = true; // first, possibly partial epoch: not counted
             }
-            self.lag_hist.push_back(d);
         }
         self.fix.tod = Some(t);
     }
@@ -657,6 +671,52 @@ mod tests {
         let n = with_lags(&lags);
         assert_eq!(n.lag_whole(), -19);
         assert!((n.lag.unwrap() + 18.49).abs() < 1e-6);
+    }
+
+    #[test]
+    fn partial_first_epoch_not_counted() {
+        let mut n = Nmea::default();
+        let t0 = Instant::now();
+        let at = |s: f64| 3600.0 + s;
+        // Joined mid-epoch: the last sentence of epoch 01:00:00 (GLL at 0.74 s).
+        n.feed(
+            &ck("GPGLL,3335.4073,N,13024.1030,E,010000.00,A,A"),
+            t0,
+            at(0.740),
+        );
+        assert!((n.lag.unwrap() - 0.740).abs() < 1e-6); // still shown
+        for s in 1..4 {
+            let tod = format!("0100{s:02}.00");
+            n.feed(
+                &ck(&format!(
+                    "GPRMC,{tod},A,3335.4073,N,13024.1030,E,0,0,141126,,,A"
+                )),
+                t0,
+                at(f64::from(s) + 0.064),
+            );
+            n.feed(
+                &ck(&format!("GPGLL,3335.4073,N,13024.1030,E,{tod},A,A")),
+                t0,
+                at(f64::from(s) + 0.740),
+            );
+        }
+        assert_eq!(n.lag_hist.len(), 3);
+        let s = n.lag_stats().unwrap();
+        assert!((s.max - 0.064).abs() < 1e-6, "{s:?}");
+        // A reconnect starts over.
+        n.resync();
+        n.feed(
+            &ck("GPGLL,3335.4073,N,13024.1030,E,010004.00,A,A"),
+            t0,
+            at(4.740),
+        );
+        assert_eq!(n.lag_hist.len(), 3);
+        n.feed(
+            &ck("GPRMC,010005.00,A,3335.4073,N,13024.1030,E,0,0,141126,,,A"),
+            t0,
+            at(5.064),
+        );
+        assert_eq!(n.lag_hist.len(), 4);
     }
 
     #[test]

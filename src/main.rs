@@ -205,6 +205,8 @@ fn handle(app: &mut app::App, ev: Ev) -> bool {
             app.connected = true;
             app.kind = kind;
             app.status = format!("connected {peer}");
+            // Data resumes mid-epoch: keep that epoch out of the lag spread.
+            app.nmea.resync();
         }
         Ev::Disconnected(why) => {
             if app.connected {
