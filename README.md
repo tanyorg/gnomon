@@ -68,6 +68,10 @@ Requires Rust 1.80 or later. The crate is published as `gnomon-gnss` (the
 name `gnomon` is taken on crates.io); it installs the commands `gnomon` and
 `metronomon`.
 
+On macOS, a binary copied over an existing one with `cp` may be killed at
+launch (`zsh: killed`): the kernel keeps the old code signature for that
+file. Remove the old file first, or use `cargo install`.
+
 | | macOS | Linux | BSDs |
 |---|---|---|---|
 | gnomon (gpsd, TCP, serial) | yes | yes | yes |
