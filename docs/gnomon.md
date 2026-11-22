@@ -134,7 +134,7 @@ delay near half a second (a GT-502MGG-N at 9600 bps) does not make the
 display jump between `-19 s +490 ms` and `-18 s -490 ms`.
 
 The dim line below shows the spread over the last 60 epochs, in ms, with the
-same whole seconds taken out: `sd 0.4  -16.4..-15.2` is the standard
+same whole seconds taken out: `sd 0.4  -16.4..-15.2` is the sample standard
 deviation and the min..max. It shows how steady the receiver's output timing
 is, which matters when NMEA alone (without PPS) is used as a time source, e.g.
 for chrony's `refclock SHM` offset and delay settings.

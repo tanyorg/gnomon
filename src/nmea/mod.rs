@@ -141,6 +141,7 @@ impl Nmea {
     }
 
     /// Statistics of the kept lags; None until two epochs have been seen.
+    /// `sd` is the sample standard deviation (n - 1), as in metronomon.
     pub fn lag_stats(&self) -> Option<LagStats> {
         let n = self.lag_hist.len();
         if n < 2 {
@@ -152,7 +153,7 @@ impl Nmea {
             .iter()
             .map(|v| (v - mean).powi(2))
             .sum::<f64>()
-            / n as f64;
+            / (n - 1) as f64;
         let (min, max) = self
             .lag_hist
             .iter()

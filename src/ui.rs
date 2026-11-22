@@ -567,18 +567,18 @@ mod tests {
         // Plain output delay: milliseconds only.
         assert_eq!(
             lag_lines(&[0.370, 0.372, 0.371]),
-            ["Lag  +371.0 ms (host-fix)", "sd 0.5  +371.0..+372.0"]
+            ["Lag  +371.0 ms (host-fix)", "sd 0.7  +371.0..+372.0"]
         );
         // Sent 16 ms ahead and labelled UTC + 19 s: the rest stays negative.
         assert_eq!(
             lag_lines(&[-19.016, -19.015, -19.016]),
-            ["Lag  -19 s -16.0 ms (host-fix)", "sd 0.5  -16.0..-15.0"]
+            ["Lag  -19 s -16.0 ms (host-fix)", "sd 0.7  -16.0..-15.0"]
         );
         // Output delay near 0.5 s: the last epoch crosses the half second
         // but the whole part, from the median, does not move.
         assert_eq!(
             lag_lines(&[-18.552, -18.551, -18.553, -18.490]),
-            ["Lag  -19 s +510.0 ms (host-fix)", "sd 29.2  +447.0..+510.0"]
+            ["Lag  -19 s +510.0 ms (host-fix)", "sd 35.8  +447.0..+510.0"]
         );
     }
 }
