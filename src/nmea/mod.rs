@@ -70,7 +70,6 @@ pub const LAG_SPLIT: f64 = 1.5;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LagStats {
     pub n: usize,
-    pub mean: f64,
     pub sd: f64,
     pub min: f64,
     pub max: f64,
@@ -162,7 +161,6 @@ impl Nmea {
             });
         Some(LagStats {
             n,
-            mean,
             sd: var.sqrt(),
             min,
             max,
