@@ -1,7 +1,7 @@
 //! gnomon: NMEA 0183 GNSS monitor modelled on gpsd's gpsmon.
 
 use gnomon_gnss::source::Ev;
-use gnomon_gnss::{app, serial, source, target, term, ui};
+use gnomon_gnss::{app, serial, source, target, term, tty, ui};
 use std::fs::OpenOptions;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
@@ -79,6 +79,7 @@ fn parse_args() -> Result<Opts, String> {
                 if b < 300 {
                     return Err(format!("bad speed: {v}"));
                 }
+                tty::check_speed(b)?;
                 o.speed = Some(b);
             }
             "-j" | "--json" => o.json = true,

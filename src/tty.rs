@@ -2,9 +2,10 @@
 //!
 //! Linux talks to the kernel directly with `TCGETS2`/`TCSETS2` and
 //! `struct termios2` (<asm-generic/termbits.h>, <asm-generic/ioctls.h>), so
-//! the speed is a plain bit rate (`BOTHER`) whatever the C library thinks
+//! the speed is the kernel's own code whatever the C library thinks
 //! `speed_t` means: glibc 2.42 changed it from B-codes to bit rates, and a
-//! binary built against either ABI must still set the right speed.
+//! binary built against either ABI must still set the right speed. Only
+//! the standard rates are offered; GNSS receivers use nothing else.
 //!
 //! The other systems go through the C library, where `speed_t` has always
 //! been the bit rate. Layouts and constants follow <sys/termios.h>:
@@ -60,7 +61,6 @@ mod os {
     const CS8: Flag = 0o60;
     const PARENB: Flag = 0o400;
     const CBAUD: Flag = 0o10017;
-    const BOTHER: Flag = 0o10000;
     const IBSHIFT: u32 = 16;
     const CIBAUD: Flag = CBAUD << IBSHIFT;
 
@@ -82,31 +82,38 @@ mod os {
     pub const TIOCNXCL: u64 = 0x540D;
     pub const TIOCMGET: u64 = 0x5415;
 
-    /// The kernel's own code for a standard rate (asm-generic termbits.h).
-    /// This is kernel ABI, unrelated to what the C library calls speed_t.
+    /// The kernel's own codes for the standard rates (asm-generic
+    /// termbits.h). This is kernel ABI, unrelated to what the C library
+    /// calls speed_t.
+    const CODES: [(u32, Flag); 14] = [
+        (1200, 0o11),
+        (2400, 0o13),
+        (4800, 0o14),
+        (9600, 0o15),
+        (19200, 0o16),
+        (38400, 0o17),
+        (57600, 0o10001),
+        (115200, 0o10002),
+        (230400, 0o10003),
+        (460800, 0o10004),
+        (500000, 0o10005),
+        (576000, 0o10006),
+        (921600, 0o10007),
+        (1000000, 0o10010),
+    ];
+
     fn kernel_code(bps: u32) -> Option<Flag> {
-        Some(match bps {
-            1200 => 0o11,
-            2400 => 0o13,
-            4800 => 0o14,
-            9600 => 0o15,
-            19200 => 0o16,
-            38400 => 0o17,
-            57600 => 0o10001,
-            115200 => 0o10002,
-            230400 => 0o10003,
-            460800 => 0o10004,
-            500000 => 0o10005,
-            576000 => 0o10006,
-            921600 => 0o10007,
-            1000000 => 0o10010,
-            _ => return None,
-        })
+        CODES.iter().find(|&&(b, _)| b == bps).map(|&(_, c)| c)
     }
 
     /// Speeds offered on the command line: the standard rates.
     pub fn speed_const(bps: u32) -> Option<Speed> {
         kernel_code(bps).map(|_| bps)
+    }
+
+    /// The rates `speed_const` accepts, for error messages.
+    pub fn rates() -> Vec<u32> {
+        CODES.iter().map(|&(b, _)| b).collect()
     }
 
     pub fn get(fd: RawFd) -> io::Result<Termios> {
@@ -139,13 +146,18 @@ mod os {
         t.c_cflag |= CS8;
     }
 
-    /// Both directions at `sp` bits per second. Standard rates use their
-    /// kernel code, so programs reading the legacy struct termios (stty,
-    /// gpsd) still see e.g. B9600; anything else is sent as a plain rate
-    /// with BOTHER. CIBAUD = 0 means "input speed = output speed".
+    /// Both directions at `sp` bits per second, by the rate's kernel code,
+    /// so programs reading the legacy struct termios (stty, gpsd) see e.g.
+    /// B9600. CIBAUD = 0 means "input speed = output speed".
     pub fn set_speed(t: &mut Termios, sp: Speed) -> io::Result<()> {
+        let code = kernel_code(sp).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported speed {sp}"),
+            )
+        })?;
         t.c_cflag &= !(CBAUD | CIBAUD);
-        t.c_cflag |= kernel_code(sp).unwrap_or(BOTHER);
+        t.c_cflag |= code;
         t.c_ispeed = sp;
         t.c_ospeed = sp;
         Ok(())
@@ -292,6 +304,24 @@ mod libc_termios {
 
 use os::*;
 
+/// Check a speed given on the command line before any port is opened.
+/// Linux takes the standard rates only; elsewhere the driver decides, and
+/// `configure` reads the result back.
+pub fn check_speed(bps: u32) -> Result<(), String> {
+    if speed_const(bps).is_some() {
+        return Ok(());
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let list = rates()
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let list = String::from("a standard rate");
+    Err(format!("unsupported speed {bps} (use {list})"))
+}
+
 /// Modem status bit for Data Carrier Detect (same value everywhere).
 const TIOCM_CAR: i32 = 0o100;
 
@@ -392,6 +422,17 @@ mod tests {
         assert_eq!(std::mem::size_of::<Termios>(), 44);
         assert!(speed_const(9600).is_some());
         assert!(speed_const(115200).is_some());
+    }
+
+    #[test]
+    fn check_speed_lists_rates() {
+        assert!(check_speed(115200).is_ok());
+        #[cfg(target_os = "linux")]
+        {
+            let e = check_speed(115201).unwrap_err();
+            assert!(e.contains("unsupported speed 115201"), "{e}");
+            assert!(e.contains("9600, 19200"), "{e}");
+        }
     }
 
     #[cfg(target_os = "linux")]
